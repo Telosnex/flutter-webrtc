@@ -67,7 +67,11 @@ EncodableMap ProfileMap(const RTCAudioProcessing::Profile& profile) {
 FlutterWebRTC::FlutterWebRTC(FlutterWebRTCPlugin* plugin)
     : FlutterWebRTCBase::FlutterWebRTCBase(plugin->messenger(),
                                            plugin->textures(),
-                                           plugin->task_runner()),
+                                           plugin->task_runner()
+#if defined(__linux__)
+                                           , plugin->audio_backend()
+#endif
+                                           ),
       FlutterVideoRendererManager::FlutterVideoRendererManager(this),
       FlutterMediaStream::FlutterMediaStream(this),
       FlutterPeerConnection::FlutterPeerConnection(this),
