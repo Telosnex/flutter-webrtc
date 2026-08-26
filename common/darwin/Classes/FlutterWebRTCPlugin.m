@@ -30,6 +30,7 @@
 #endif
 
 #import "LocalTrack.h"
+#import "LocalAudioCaptureProcessor.h"
 #import "LocalAudioTrack.h"
 #import "LocalVideoTrack.h"
 
@@ -119,6 +120,9 @@ void postEvent(FlutterEventSink _Nullable sink, id _Nullable event) {
   BOOL _speakerOnButPreferBluetooth;
   AVAudioSessionPort _preferredInput;
   AudioManager* _audioManager;
+  LocalAudioCaptureProcessor* _localAudioCaptureProcessor;
+  dispatch_queue_t _localAudioCaptureQueue;
+  BOOL _localAudioCaptureStopPending;
 #if TARGET_OS_IPHONE || TARGET_OS_OSX
   FlutterRTCVideoPlatformViewFactory *_platformViewFactory;
 #endif
@@ -179,6 +183,75 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
   gAudioDeviceModuleObserver = observer;
 }
 
++ (NSString*)audioProcessingImplementationString:
+    (RTCAudioProcessingImplementation)implementation {
+  switch (implementation) {
+    case RTCAudioProcessingImplementationDisabled:
+      return @"disabled";
+    case RTCAudioProcessingImplementationSoftware:
+      return @"software";
+    case RTCAudioProcessingImplementationPlatform:
+      return @"platform";
+    case RTCAudioProcessingImplementationSoftwareAndPlatform:
+      return @"softwareAndPlatform";
+    case RTCAudioProcessingImplementationUnknown:
+      return @"unknown";
+  }
+}
+
++ (NSDictionary*)audioProcessingComponentStateMap:
+    (RTCAudioProcessingComponentState*)state {
+  NSMutableDictionary* map = [@{
+    @"softwareResolved" : @(state.isSoftwareResolved),
+    @"softwareActive" : @(state.isSoftwareActive),
+    @"platformAvailable" : @(state.isPlatformAvailable),
+    @"platformResolved" : @(state.isPlatformResolved),
+    @"platformActive" : @(state.isPlatformActive),
+    @"effective" : [self audioProcessingImplementationString:state.effective]
+  } mutableCopy];
+  if (state.requested != nil) {
+    map[@"requested"] = @{
+      @"enabled" : @(state.requested.isEnabled),
+      @"mode" : @(state.requested.mode)
+    };
+  }
+  return map;
+}
+
+- (NSDictionary*)audioProcessingStateMap {
+  RTCAudioProcessingState* state = self.peerConnectionFactory.audioProcessingState;
+  if (state == nil) return @{};
+  return @{
+    @"hasAudioProcessingModule" : @(state.hasAudioProcessingModule),
+    @"echoCancellation" :
+        [FlutterWebRTCPlugin audioProcessingComponentStateMap:state.echoCancellation],
+    @"noiseSuppression" :
+        [FlutterWebRTCPlugin audioProcessingComponentStateMap:state.noiseSuppression],
+    @"autoGainControl" :
+        [FlutterWebRTCPlugin audioProcessingComponentStateMap:state.autoGainControl],
+    @"highPassFilter" :
+        [FlutterWebRTCPlugin audioProcessingComponentStateMap:state.highPassFilter]
+  };
+}
+
+- (NSDictionary*)localAudioCaptureStateMap:(RTCAudioDeviceModule*)adm {
+  RTCAudioEngineState engineState = adm.engineState;
+  NSMutableDictionary* state = [@{
+    @"generation" : @(_localAudioCaptureProcessor.activeGeneration),
+    @"active" : @(_localAudioCaptureProcessor.isActive),
+    @"recording" : @(adm.isRecording),
+    @"engineRunning" : @(adm.isEngineRunning),
+    @"inputEnabled" : @(engineState.inputEnabled),
+    @"inputRunning" : @(engineState.inputRunning),
+    @"inputMuted" : @(engineState.inputMuted),
+    @"processedCallbacks" : @(_localAudioCaptureProcessor.processedCallbacks),
+    @"processedFrames" : @(_localAudioCaptureProcessor.processedFrames),
+    @"processingState" : [self audioProcessingStateMap]
+  } mutableCopy];
+  state[@"externalRecordingDemand"] = @(adm.hasExternalRecordingDemand);
+  return state;
+}
+
 - (BOOL)audioSessionManagementEnabled {
   return gAudioSessionManagementEnabled;
 }
@@ -230,6 +303,18 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
     _speakerOnButPreferBluetooth = NO;
     _eventChannel = eventChannel;
     _audioManager = AudioManager.sharedInstance;
+    _localAudioCaptureStopPending = NO;
+    _localAudioCaptureQueue = dispatch_queue_create(
+        "FlutterWebRTC.LocalAudioCapture.Lifecycle", DISPATCH_QUEUE_SERIAL);
+    __weak FlutterWebRTCPlugin* weakSelf = self;
+    _localAudioCaptureProcessor = [[LocalAudioCaptureProcessor alloc]
+        initWithEventHandler:^(NSDictionary<NSString*, id>* event) {
+          FlutterWebRTCPlugin* strongSelf = weakSelf;
+          if (strongSelf == nil || strongSelf.eventSink == nil) return;
+          postEvent(strongSelf.eventSink, event);
+        }];
+    [_audioManager.capturePostProcessingAdapter
+        addProcessing:_localAudioCaptureProcessor];
 
 #if TARGET_OS_IPHONE
     _preferredInput = AVAudioSessionPortHeadphones;
@@ -265,9 +350,6 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
                                                name:AVAudioSessionRouteChangeNotification
                                              object:session];
 #endif
-
-  // Observe audio device module events.
-  _peerConnectionFactory.audioDeviceModule.observer = self;
 
   return self;
 }
@@ -379,12 +461,11 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
                                                              decoderFactory:decoderFactory
                                                       audioProcessingModule:_audioManager.audioProcessingModule];
 
-        // Allow an embedding plugin (e.g. livekit_client) to own the audio
-        // device module's engine-lifecycle delegate. Only override the observer
-        // when one is registered, leaving default behavior unchanged otherwise.
-        if (gAudioDeviceModuleObserver != nil) {
-            _peerConnectionFactory.audioDeviceModule.observer = gAudioDeviceModuleObserver;
-        }
+        // Install only after the factory and ADM exist. The previous init-time
+        // assignment messaged a nil factory and silently installed nothing.
+        // An embedding plugin (e.g. livekit_client) may still own callbacks.
+        _peerConnectionFactory.audioDeviceModule.observer =
+            gAudioDeviceModuleObserver != nil ? gAudioDeviceModuleObserver : self;
 
 #if TARGET_OS_OSX
         // CoreAudio ADM requires explicit device initialization on macOS
@@ -1721,6 +1802,111 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
                                                 details:nil]);
                 }
 #endif
+    } else if ([@"startLocalAudioCapture" isEqualToString:call.method]) {
+      RTCAudioDeviceModule* adm = _peerConnectionFactory.audioDeviceModule;
+      if (adm == nil) {
+        result([FlutterError errorWithCode:@"startLocalAudioCapture failed"
+                                   message:@"Audio device module is unavailable"
+                                   details:nil]);
+        return;
+      }
+      if (_localAudioCaptureProcessor.isActive) {
+        result([FlutterError errorWithCode:@"startLocalAudioCapture active"
+                                   message:@"A capture generation is already active"
+                                   details:[self localAudioCaptureStateMap:adm]]);
+        return;
+      }
+      NSDictionary* profile = call.arguments[@"profile"];
+      BOOL echoCancellation = profile[@"echoCancellation"] == nil
+          ? YES : [profile[@"echoCancellation"] boolValue];
+      BOOL noiseSuppression = profile[@"noiseSuppression"] == nil
+          ? YES : [profile[@"noiseSuppression"] boolValue];
+      BOOL autoGainControl = profile[@"autoGainControl"] == nil
+          ? YES : [profile[@"autoGainControl"] boolValue];
+      BOOL highPassFilter = profile[@"highPassFilter"] == nil
+          ? YES : [profile[@"highPassFilter"] boolValue];
+      RTCAudioProcessingOptions* options = [[RTCAudioProcessingOptions alloc]
+          initWithEchoCancellation:echoCancellation
+                  noiseSuppression:noiseSuppression
+                   autoGainControl:autoGainControl
+                    highPassFilter:highPassFilter];
+      NSUInteger generation = [_localAudioCaptureProcessor activate];
+      dispatch_async(_localAudioCaptureQueue, ^{
+        NSInteger demandResult = [adm setExternalRecordingDemand:YES];
+        NSInteger admResult = demandResult == 0
+            ? [adm initAndStartRecordingWithAudioProcessingOptions:options]
+            : demandResult;
+        if (admResult != 0) {
+          [adm setExternalRecordingDemand:NO];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (admResult == 0) {
+            result(@{
+              @"generation" : @(generation),
+              @"requestedProfile" : @{
+                @"echoCancellation" : @(echoCancellation),
+                @"noiseSuppression" : @(noiseSuppression),
+                @"autoGainControl" : @(autoGainControl),
+                @"highPassFilter" : @(highPassFilter)
+              },
+              @"processingState" : [self audioProcessingStateMap],
+              @"platformVoiceProcessingAllowed" :
+                  @(adm.isPlatformVoiceProcessingAllowed),
+              @"voiceProcessingBypassed" : @(adm.isVoiceProcessingBypassed),
+              @"externalDemandResult" : @(demandResult)
+            });
+          } else {
+            [self->_localAudioCaptureProcessor deactivateGeneration:generation];
+            result([FlutterError
+                errorWithCode:@"startLocalAudioCapture failed"
+                      message:[NSString stringWithFormat:
+                          @"ADM start failed with code: %ld", (long)admResult]
+                      details:[self localAudioCaptureStateMap:adm]]);
+          }
+        });
+      });
+    } else if ([@"stopLocalAudioCapture" isEqualToString:call.method]) {
+      RTCAudioDeviceModule* adm = _peerConnectionFactory.audioDeviceModule;
+      NSUInteger generation = [call.arguments[@"generation"] unsignedIntegerValue];
+      if (!_localAudioCaptureProcessor.isActive ||
+          generation != _localAudioCaptureProcessor.activeGeneration) {
+        result([FlutterError errorWithCode:@"stopLocalAudioCapture staleGeneration"
+                                   message:@"Capture generation is no longer active"
+                                   details:nil]);
+        return;
+      }
+      if (_localAudioCaptureStopPending) {
+        result([FlutterError errorWithCode:@"stopLocalAudioCapture pending"
+                                   message:@"Capture stop is already pending"
+                                   details:[self localAudioCaptureStateMap:adm]]);
+        return;
+      }
+      _localAudioCaptureStopPending = YES;
+      dispatch_async(_localAudioCaptureQueue, ^{
+        NSInteger demandResult = [adm setExternalRecordingDemand:NO];
+        NSInteger admResult = demandResult == 0 ? [adm stopRecording] : demandResult;
+        if (demandResult == 0 && admResult != 0) {
+          // Stop failed, so preserve ownership of the still-active generation.
+          [adm setExternalRecordingDemand:YES];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+          self->_localAudioCaptureStopPending = NO;
+          if (demandResult == 0 && admResult == 0) {
+            [self->_localAudioCaptureProcessor deactivateGeneration:generation];
+            result(nil);
+          } else {
+            result([FlutterError
+                errorWithCode:@"stopLocalAudioCapture failed"
+                      message:[NSString stringWithFormat:
+                          @"ADM stop failed: demand=%ld stop=%ld",
+                          (long)demandResult, (long)admResult]
+                      details:[self localAudioCaptureStateMap:adm]]);
+          }
+        });
+      });
+    } else if ([@"getLocalAudioCaptureState" isEqualToString:call.method]) {
+      RTCAudioDeviceModule* adm = _peerConnectionFactory.audioDeviceModule;
+      result([self localAudioCaptureStateMap:adm]);
     } else if ([@"startLocalRecording" isEqualToString:call.method]) {
       RTCAudioDeviceModule* adm = _peerConnectionFactory.audioDeviceModule;
       // Run on background queue
@@ -1839,6 +2025,17 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 }
 
 - (void)dealloc {
+  if (_localAudioCaptureProcessor != nil) {
+    if (_localAudioCaptureProcessor.isActive) {
+      [_localAudioCaptureProcessor
+          deactivateGeneration:_localAudioCaptureProcessor.activeGeneration];
+      RTCAudioDeviceModule* adm = _peerConnectionFactory.audioDeviceModule;
+      [adm setExternalRecordingDemand:NO];
+      [adm stopRecording];
+    }
+    [_audioManager.capturePostProcessingAdapter
+        removeProcessing:_localAudioCaptureProcessor];
+  }
   [_localTracks removeAllObjects];
   _localTracks = nil;
   [_localStreams removeAllObjects];

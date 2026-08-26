@@ -21,6 +21,7 @@ add_library(${PLUGIN_NAME} SHARED
   "../common/cpp/src/flutter_data_channel.cc"
   "../common/cpp/src/flutter_data_packet_cryptor.cc"
   "../common/cpp/src/flutter_frame_cryptor.cc"
+  "../common/cpp/src/flutter_local_audio_capture.cc"
   "../common/cpp/src/flutter_media_stream.cc"
   "../common/cpp/src/flutter_utf8_sanitize.cc"
   "../common/cpp/src/flutter_peerconnection.cc"
@@ -69,3 +70,16 @@ set(flutter_webrtc_bundled_libraries
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/lib/libwebrtc.dll"
   PARENT_SCOPE
 )
+
+if(BUILD_TESTING)
+  add_executable(flutter_local_audio_capture_test
+    "../common/cpp/src/flutter_local_audio_capture.cc"
+    "../common/cpp/test/flutter_local_audio_capture_test.cc"
+  )
+  target_include_directories(flutter_local_audio_capture_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../common/cpp/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/include"
+  )
+  add_test(NAME flutter_local_audio_capture_test
+    COMMAND flutter_local_audio_capture_test)
+endif()

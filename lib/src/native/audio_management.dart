@@ -3,6 +3,9 @@ import 'package:flutter/services.dart';
 
 import 'package:webrtc_interface/webrtc_interface.dart';
 
+import 'local_audio_capture.dart';
+import 'local_audio_capture_backend.dart'
+    if (dart.library.js_interop) '../web/local_audio_capture_backend.dart';
 import 'media_stream_track_impl.dart';
 import 'utils.dart';
 
@@ -27,17 +30,15 @@ enum MicrophoneMuteMode {
 
 class NativeAudioManagement {
   static Future<void> selectAudioInput(String deviceId) async {
-    await WebRTC.invokeMethod(
-      'selectAudioInput',
-      <String, dynamic>{'deviceId': deviceId},
-    );
+    await WebRTC.invokeMethod('selectAudioInput', <String, dynamic>{
+      'deviceId': deviceId,
+    });
   }
 
   static Future<void> setSpeakerphoneOn(bool enable) async {
-    await WebRTC.invokeMethod(
-      'enableSpeakerphone',
-      <String, dynamic>{'enable': enable},
-    );
+    await WebRTC.invokeMethod('enableSpeakerphone', <String, dynamic>{
+      'enable': enable,
+    });
   }
 
   static Future<void> ensureAudioSession() async {
@@ -59,7 +60,7 @@ class NativeAudioManagement {
           'trackId': track.id,
           'volume': volume,
           'peerConnectionId':
-              track is MediaStreamTrackNative ? track.peerConnectionId : null
+              track is MediaStreamTrackNative ? track.peerConnectionId : null,
         });
       }
     }
@@ -68,17 +69,19 @@ class NativeAudioManagement {
   }
 
   static Future<void> setMicrophoneMute(
-      bool mute, MediaStreamTrack track) async {
+    bool mute,
+    MediaStreamTrack track,
+  ) async {
     if (track.kind != 'audio') {
       throw 'The is not an audio track => $track';
     }
 
     if (!kIsWeb) {
       try {
-        await WebRTC.invokeMethod(
-          'setMicrophoneMute',
-          <String, dynamic>{'trackId': track.id, 'mute': mute},
-        );
+        await WebRTC.invokeMethod('setMicrophoneMute', <String, dynamic>{
+          'trackId': track.id,
+          'mute': mute,
+        });
       } on PlatformException catch (e) {
         throw 'Unable to MediaStreamTrack::setMicrophoneMute: ${e.message}';
       }
@@ -86,14 +89,59 @@ class NativeAudioManagement {
     track.enabled = !mute;
   }
 
-  // ADM APIs
+  static final LocalAudioCaptureBackend _localAudioCaptureBackend =
+      LocalAudioCaptureBackend();
+
+  /// Processed PCM emitted by the app-owned capture generation.
+  ///
+  /// Native platforms tap post-APM PCM. Web taps the same constrained browser
+  /// track that is borrowed by RTP through a read-only AudioWorklet graph.
+  static Stream<LocalAudioCaptureEvent> get localAudioEvents =>
+      _localAudioCaptureBackend.events;
+
+  static bool get supportsLocalAudioCapture =>
+      _localAudioCaptureBackend.isSupported;
+
+  /// Starts a generation over the already controller-owned microphone track.
+  ///
+  /// [track] is required on web because the AudioWorklet must consume the same
+  /// browser track later borrowed by RTP. Native bridges resolve [trackId].
+  static Future<LocalAudioCaptureStart> startLocalAudioCapture({
+    LocalAudioProcessingProfile profile = const LocalAudioProcessingProfile(),
+    MediaStreamTrack? track,
+    String? trackId,
+  }) async {
+    if (!supportsLocalAudioCapture) {
+      throw UnsupportedError(
+        'Peerless local audio capture is not implemented on this platform.',
+      );
+    }
+    return _localAudioCaptureBackend.start(
+      profile: profile,
+      track: track,
+      trackId: trackId,
+    );
+  }
+
+  static Future<void> stopLocalAudioCapture(int generation) async {
+    if (!supportsLocalAudioCapture) {
+      throw UnsupportedError(
+        'Peerless local audio capture is not implemented on this platform.',
+      );
+    }
+    await _localAudioCaptureBackend.stop(generation);
+  }
+
+  static Future<Map<String, dynamic>> getLocalAudioCaptureState() async {
+    if (!supportsLocalAudioCapture) return const {};
+    return _localAudioCaptureBackend.getState();
+  }
+
+  // Legacy ADM APIs. Prefer the generation-scoped capture API above.
   static Future<void> startLocalRecording() async {
     if (!kIsWeb) {
       try {
-        await WebRTC.invokeMethod(
-          'startLocalRecording',
-          <String, dynamic>{},
-        );
+        await WebRTC.invokeMethod('startLocalRecording', <String, dynamic>{});
       } on PlatformException catch (e) {
         throw 'Unable to start local recording: ${e.message}';
       }
@@ -103,10 +151,7 @@ class NativeAudioManagement {
   static Future<void> stopLocalRecording() async {
     if (!kIsWeb) {
       try {
-        await WebRTC.invokeMethod(
-          'stopLocalRecording',
-          <String, dynamic>{},
-        );
+        await WebRTC.invokeMethod('stopLocalRecording', <String, dynamic>{});
       } on PlatformException catch (e) {
         throw 'Unable to stop local recording: ${e.message}';
       }
@@ -200,10 +245,9 @@ class NativeAudioManagement {
     if (!_supportsMicrophoneMuteMode) return;
 
     try {
-      await WebRTC.invokeMethod(
-        'setMicrophoneMuteMode',
-        <String, dynamic>{'mode': mode.name},
-      );
+      await WebRTC.invokeMethod('setMicrophoneMuteMode', <String, dynamic>{
+        'mode': mode.name,
+      });
     } on PlatformException catch (e) {
       throw 'Unable to set microphoneMuteMode: ${e.message}';
     }
@@ -238,10 +282,9 @@ class NativeAudioManagement {
     if (!_supportsAdmMicrophoneMute) return;
 
     try {
-      await WebRTC.invokeMethod(
-        'setMicrophoneMuted',
-        <String, dynamic>{'muted': muted},
-      );
+      await WebRTC.invokeMethod('setMicrophoneMuted', <String, dynamic>{
+        'muted': muted,
+      });
     } on PlatformException catch (e) {
       throw 'Unable to set isMicrophoneMuted: ${e.message}';
     }

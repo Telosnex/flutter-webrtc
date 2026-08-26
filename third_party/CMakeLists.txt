@@ -14,6 +14,10 @@ endif()
 
 set(LIBWEBRTC_BINARY_VERSION "")
 set(LIBWEBRTC_DOWNLOAD_URL_BASE "")
+set(LIBWEBRTC_LINUX_X64_SHA256 "")
+set(LIBWEBRTC_LINUX_ARM64_SHA256 "")
+set(LIBWEBRTC_WIN_X64_SHA256 "")
+set(LIBWEBRTC_WIN_ARM64_SHA256 "")
 file(STRINGS "${LIBWEBRTC_VERSION_INI}" _libwebrtc_ini_lines)
 foreach(_line IN LISTS _libwebrtc_ini_lines)
   string(STRIP "${_line}" _line)
@@ -30,6 +34,14 @@ foreach(_line IN LISTS _libwebrtc_ini_lines)
     set(LIBWEBRTC_BINARY_VERSION "${_value}")
   elseif(_key STREQUAL "download_url")
     set(LIBWEBRTC_DOWNLOAD_URL_BASE "${_value}")
+  elseif(_key STREQUAL "linux_x64_sha256")
+    set(LIBWEBRTC_LINUX_X64_SHA256 "${_value}")
+  elseif(_key STREQUAL "linux_arm64_sha256")
+    set(LIBWEBRTC_LINUX_ARM64_SHA256 "${_value}")
+  elseif(_key STREQUAL "win_x64_sha256")
+    set(LIBWEBRTC_WIN_X64_SHA256 "${_value}")
+  elseif(_key STREQUAL "win_arm64_sha256")
+    set(LIBWEBRTC_WIN_ARM64_SHA256 "${_value}")
   endif()
 endforeach()
 
@@ -80,6 +92,23 @@ endif()
 
 set(LIBWEBRTC_ASSET "libwebrtc-${LIBWEBRTC_OS}-${LIBWEBRTC_ARCH}-release")
 set(ZIPFILE "${LIBWEBRTC_THIRD_PARTY_DIR}/downloads/${LIBWEBRTC_ASSET}.zip")
+if(LIBWEBRTC_OS STREQUAL "linux" AND LIBWEBRTC_ARCH STREQUAL "x64")
+  set(LIBWEBRTC_EXPECTED_SHA256 "${LIBWEBRTC_LINUX_X64_SHA256}")
+elseif(LIBWEBRTC_OS STREQUAL "linux" AND LIBWEBRTC_ARCH STREQUAL "arm64")
+  set(LIBWEBRTC_EXPECTED_SHA256 "${LIBWEBRTC_LINUX_ARM64_SHA256}")
+elseif(LIBWEBRTC_OS STREQUAL "win" AND LIBWEBRTC_ARCH STREQUAL "x64")
+  set(LIBWEBRTC_EXPECTED_SHA256 "${LIBWEBRTC_WIN_X64_SHA256}")
+else()
+  set(LIBWEBRTC_EXPECTED_SHA256 "${LIBWEBRTC_WIN_ARM64_SHA256}")
+endif()
+if("${LIBWEBRTC_EXPECTED_SHA256}" STREQUAL "")
+  message(FATAL_ERROR
+    "libwebrtc: ${LIBWEBRTC_VERSION_INI} has no SHA-256 for ${LIBWEBRTC_ASSET}")
+endif()
+set(LIBWEBRTC_EXTRACT_ID
+  "${LIBWEBRTC_BINARY_VERSION}/${LIBWEBRTC_ASSET}/${LIBWEBRTC_EXPECTED_SHA256}")
+set(LIBWEBRTC_EXTRACT_STAMP
+  "${LIBWEBRTC_THIRD_PARTY_DIR}/libwebrtc/.artifact-id")
 
 # Final URL = <base>/<binary_version>/<asset>.zip
 set(DOWNLOAD_URL "${LIBWEBRTC_DOWNLOAD_URL_BASE}/${LIBWEBRTC_BINARY_VERSION}/${LIBWEBRTC_ASSET}.zip")
@@ -119,11 +148,24 @@ function(_libwebrtc_extract_and_normalize zip_path dest_dir)
   file(REMOVE_RECURSE "${_staging}")
 endfunction()
 
-if(NOT EXISTS "${ZIPFILE}")
+set(_libwebrtc_download_required TRUE)
+if(EXISTS "${ZIPFILE}")
+  file(SHA256 "${ZIPFILE}" _libwebrtc_downloaded_sha256)
+  if("${_libwebrtc_downloaded_sha256}" STREQUAL
+      "${LIBWEBRTC_EXPECTED_SHA256}")
+    set(_libwebrtc_download_required FALSE)
+  else()
+    message(NOTICE "discarding stale libwebrtc archive: ${ZIPFILE}")
+    file(REMOVE "${ZIPFILE}")
+  endif()
+endif()
+
+if(_libwebrtc_download_required)
   message(NOTICE "download: ${DOWNLOAD_URL}")
   file(MAKE_DIRECTORY "${LIBWEBRTC_THIRD_PARTY_DIR}/downloads")
   file(DOWNLOAD "${DOWNLOAD_URL}"
       ${ZIPFILE}
+      EXPECTED_HASH "SHA256=${LIBWEBRTC_EXPECTED_SHA256}"
       STATUS download_status
       LOG download_log)
 
@@ -131,11 +173,22 @@ if(NOT EXISTS "${ZIPFILE}")
     message(FATAL_ERROR "Failed to download dependency: ${download_log}")
   endif()
 
-  _libwebrtc_extract_and_normalize("${ZIPFILE}" "${LIBWEBRTC_THIRD_PARTY_DIR}")
+endif()
+
+# The extraction directory is shared by Windows/Linux and survives package
+# upgrades. A ZIP existing for the requested target is not enough: without a
+# stamp, switching target or binary version can silently reuse the wrong
+# headers/library from the previous configure.
+set(_libwebrtc_extracted_id "")
+if(EXISTS "${LIBWEBRTC_EXTRACT_STAMP}")
+  file(READ "${LIBWEBRTC_EXTRACT_STAMP}" _libwebrtc_extracted_id)
+  string(STRIP "${_libwebrtc_extracted_id}" _libwebrtc_extracted_id)
+endif()
+if(NOT "${_libwebrtc_extracted_id}" STREQUAL "${LIBWEBRTC_EXTRACT_ID}")
+  message(NOTICE "extract: ${LIBWEBRTC_EXTRACT_ID}")
+  _libwebrtc_extract_and_normalize(
+    "${ZIPFILE}" "${LIBWEBRTC_THIRD_PARTY_DIR}")
+  file(WRITE "${LIBWEBRTC_EXTRACT_STAMP}" "${LIBWEBRTC_EXTRACT_ID}\n")
 else()
-  if(NOT EXISTS "${LIBWEBRTC_THIRD_PARTY_DIR}/libwebrtc")
-    message(NOTICE "libwebrtc directory does not exist after extraction.")
-    _libwebrtc_extract_and_normalize("${ZIPFILE}" "${LIBWEBRTC_THIRD_PARTY_DIR}")
-  endif()
-  message(TRACE "libwebrtc already downloaded.")
+  message(TRACE "libwebrtc artifact already extracted.")
 endif()

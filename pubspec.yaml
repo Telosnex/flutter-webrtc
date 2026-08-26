@@ -25,6 +25,8 @@ dev_dependencies:
   test: any
 
 flutter:
+  assets:
+    - assets/local_audio_capture_processor.js
   plugin:
     platforms:
       android:

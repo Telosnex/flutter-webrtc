@@ -7,6 +7,63 @@ namespace flutter_webrtc_plugin {
 
 static EventChannelProxy* eventChannelProxy = nullptr;
 
+namespace {
+
+bool ProfileBoolean(const EncodableMap& profile,
+                    const std::string& key,
+                    bool fallback) {
+  const auto value = profile.find(EncodableValue(key));
+  if (value == profile.end() || !TypeIs<bool>(value->second)) {
+    return fallback;
+  }
+  return GetValue<bool>(value->second);
+}
+
+EncodableMap ComponentStateMap(
+    const RTCAudioProcessing::ComponentState& state) {
+  EncodableMap map;
+  map[EncodableValue("softwareResolved")] = EncodableValue(true);
+  map[EncodableValue("softwareActive")] =
+      EncodableValue(state.software_active);
+  map[EncodableValue("platformAvailable")] = EncodableValue(false);
+  map[EncodableValue("platformResolved")] = EncodableValue(false);
+  map[EncodableValue("platformActive")] = EncodableValue(false);
+  map[EncodableValue("effective")] =
+      EncodableValue(state.software_active ? "software" : "none");
+  return map;
+}
+
+EncodableMap ProcessingStateMap(
+    const RTCAudioProcessing::ProcessingState& state) {
+  EncodableMap map;
+  map[EncodableValue("hasAudioProcessingModule")] =
+      EncodableValue(state.has_audio_processing_module);
+  map[EncodableValue("echoCancellation")] =
+      EncodableValue(ComponentStateMap(state.echo_cancellation));
+  map[EncodableValue("noiseSuppression")] =
+      EncodableValue(ComponentStateMap(state.noise_suppression));
+  map[EncodableValue("autoGainControl")] =
+      EncodableValue(ComponentStateMap(state.auto_gain_control));
+  map[EncodableValue("highPassFilter")] =
+      EncodableValue(ComponentStateMap(state.high_pass_filter));
+  return map;
+}
+
+EncodableMap ProfileMap(const RTCAudioProcessing::Profile& profile) {
+  EncodableMap map;
+  map[EncodableValue("echoCancellation")] =
+      EncodableValue(profile.echo_cancellation);
+  map[EncodableValue("noiseSuppression")] =
+      EncodableValue(profile.noise_suppression);
+  map[EncodableValue("autoGainControl")] =
+      EncodableValue(profile.auto_gain_control);
+  map[EncodableValue("highPassFilter")] =
+      EncodableValue(profile.high_pass_filter);
+  return map;
+}
+
+}  // namespace
+
 FlutterWebRTC::FlutterWebRTC(FlutterWebRTCPlugin* plugin)
     : FlutterWebRTCBase::FlutterWebRTCBase(plugin->messenger(),
                                            plugin->textures(),
@@ -17,9 +74,27 @@ FlutterWebRTC::FlutterWebRTC(FlutterWebRTCPlugin* plugin)
       FlutterScreenCapture::FlutterScreenCapture(this),
       FlutterDataChannel::FlutterDataChannel(this),
       FlutterFrameCryptor::FlutterFrameCryptor(this),
-      FlutterDataPacketCryptor::FlutterDataPacketCryptor(this) {}
+      FlutterDataPacketCryptor::FlutterDataPacketCryptor(this) {
+  local_audio_capture_ = std::make_unique<FlutterLocalAudioCapture>(
+      [this](const EncodableMap& event) {
+        if (event_channel()) {
+          event_channel()->Success(EncodableValue(event), false);
+        }
+      });
+  audio_processing_->SetCapturePostProcessing(local_audio_capture_.get());
+}
 
-FlutterWebRTC::~FlutterWebRTC() {}
+FlutterWebRTC::~FlutterWebRTC() {
+  if (!local_audio_capture_) {
+    return;
+  }
+  if (local_audio_capture_->active()) {
+    audio_device_->ReleaseRecording();
+  }
+  audio_processing_->SetCapturePostProcessing(nullptr);
+  local_audio_capture_->Shutdown();
+  local_audio_capture_.reset();
+}
 
 void FlutterWebRTC::HandleMethodCall(
     const MethodCallProxy& method_call,
@@ -34,6 +109,23 @@ void FlutterWebRTC::HandleMethodCall(
       initLoggerCallback(severity);
     }
     result->Success();
+  } else if (method_call.method_name().compare("startLocalAudioCapture") == 0) {
+    if (!method_call.arguments()) {
+      result->Error("startLocalAudioCapture", "Null arguments received");
+      return;
+    }
+    StartLocalAudioCapture(
+        GetValue<EncodableMap>(*method_call.arguments()), std::move(result));
+  } else if (method_call.method_name().compare("stopLocalAudioCapture") == 0) {
+    if (!method_call.arguments()) {
+      result->Error("stopLocalAudioCapture", "Null arguments received");
+      return;
+    }
+    StopLocalAudioCapture(
+        GetValue<EncodableMap>(*method_call.arguments()), std::move(result));
+  } else if (method_call.method_name().compare("getLocalAudioCaptureState") ==
+             0) {
+    result->Success(EncodableValue(LocalAudioCaptureState()));
   } else if (method_call.method_name().compare("createPeerConnection") == 0) {
     if (!method_call.arguments()) {
       result->Error("Bad Arguments", "Null arguments received");
@@ -1297,6 +1389,109 @@ void FlutterWebRTC::HandleMethodCall(
       result->NotImplemented();
     }
   }
+}
+
+void FlutterWebRTC::StartLocalAudioCapture(
+    const EncodableMap& params,
+    std::unique_ptr<MethodResultProxy> result) {
+  if (!local_audio_capture_ || !audio_device_ || !audio_processing_) {
+    result->Error("startLocalAudioCapture",
+                  "WebRTC audio factory is not initialized");
+    return;
+  }
+  if (local_audio_capture_->active()) {
+    result->Error("startLocalAudioCapture", "Capture is already active");
+    return;
+  }
+
+  const EncodableMap profile_map = findMap(params, "profile");
+  RTCAudioProcessing::Profile profile;
+  profile.echo_cancellation =
+      ProfileBoolean(profile_map, "echoCancellation", true);
+  profile.noise_suppression =
+      ProfileBoolean(profile_map, "noiseSuppression", true);
+  profile.auto_gain_control =
+      ProfileBoolean(profile_map, "autoGainControl", true);
+  profile.high_pass_filter =
+      ProfileBoolean(profile_map, "highPassFilter", true);
+
+  if (audio_processing_->ApplyCaptureProfile(profile) != 0) {
+    result->Error("startLocalAudioCapture",
+                  "Failed to apply capture processing profile");
+    return;
+  }
+
+  const int32_t generation = local_audio_capture_->Activate();
+  const int32_t capture_result = audio_device_->AcquireRecording();
+  if (capture_result != 0) {
+    local_audio_capture_->Deactivate(generation, "startFailed");
+    result->Error("startLocalAudioCapture",
+                  "Failed to acquire app-owned ADM recording demand",
+                  EncodableValue(LocalAudioCaptureState()));
+    return;
+  }
+
+  EncodableMap response;
+  response[EncodableValue("generation")] = EncodableValue(generation);
+  response[EncodableValue("requestedProfile")] =
+      EncodableValue(ProfileMap(profile));
+  response[EncodableValue("processingState")] = EncodableValue(
+      ProcessingStateMap(audio_processing_->GetCaptureProcessingState()));
+  response[EncodableValue("platformVoiceProcessingAllowed")] =
+      EncodableValue(false);
+  response[EncodableValue("voiceProcessingBypassed")] = EncodableValue(false);
+  result->Success(EncodableValue(response));
+}
+
+void FlutterWebRTC::StopLocalAudioCapture(
+    const EncodableMap& params,
+    std::unique_ptr<MethodResultProxy> result) {
+  if (!local_audio_capture_ || !audio_device_ || !audio_processing_) {
+    result->Error("stopLocalAudioCapture",
+                  "WebRTC audio factory is not initialized");
+    return;
+  }
+  const int64_t generation = findLongInt(params, "generation");
+  if (generation <= 0 ||
+      generation != local_audio_capture_->active_generation()) {
+    result->Error("stopLocalAudioCapture",
+                  "Capture generation is no longer active",
+                  EncodableValue(LocalAudioCaptureState()));
+    return;
+  }
+
+  const int32_t capture_result = audio_device_->ReleaseRecording();
+  if (capture_result != 0) {
+    result->Error("stopLocalAudioCapture",
+                  "Failed to release app-owned ADM recording demand",
+                  EncodableValue(LocalAudioCaptureState()));
+    return;
+  }
+  local_audio_capture_->Deactivate(static_cast<int32_t>(generation),
+                                   "requested");
+  result->Success();
+}
+
+EncodableMap FlutterWebRTC::LocalAudioCaptureState() {
+  const RTCAudioDevice::RecordingState recording =
+      audio_device_->GetRecordingState();
+  EncodableMap state;
+  state[EncodableValue("generation")] =
+      EncodableValue(local_audio_capture_->active_generation());
+  state[EncodableValue("active")] =
+      EncodableValue(local_audio_capture_->active());
+  state[EncodableValue("recordingInitialized")] =
+      EncodableValue(recording.initialized);
+  state[EncodableValue("recording")] = EncodableValue(recording.recording);
+  state[EncodableValue("externalRecordingDemand")] =
+      EncodableValue(recording.external_demand);
+  state[EncodableValue("processedCallbacks")] =
+      EncodableValue(local_audio_capture_->processed_callbacks());
+  state[EncodableValue("processedFrames")] =
+      EncodableValue(local_audio_capture_->processed_frames());
+  state[EncodableValue("processingState")] = EncodableValue(
+      ProcessingStateMap(audio_processing_->GetCaptureProcessingState()));
+  return state;
 }
 
 void FlutterWebRTC::initLoggerCallback(RTCLoggingSeverity severity) {

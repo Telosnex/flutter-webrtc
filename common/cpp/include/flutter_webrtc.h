@@ -6,6 +6,7 @@
 #include "flutter_data_channel.h"
 #include "flutter_data_packet_cryptor.h"
 #include "flutter_frame_cryptor.h"
+#include "flutter_local_audio_capture.h"
 #include "flutter_media_stream.h"
 #include "flutter_peerconnection.h"
 #include "flutter_screen_capture.h"
@@ -43,6 +44,13 @@ class FlutterWebRTC : public FlutterWebRTCBase,
                         std::unique_ptr<MethodResultProxy> result);
 
  private:
+  void StartLocalAudioCapture(const EncodableMap& params,
+                              std::unique_ptr<MethodResultProxy> result);
+  void StopLocalAudioCapture(const EncodableMap& params,
+                             std::unique_ptr<MethodResultProxy> result);
+  EncodableMap LocalAudioCaptureState();
+
+  std::unique_ptr<FlutterLocalAudioCapture> local_audio_capture_;
   void initLoggerCallback(RTCLoggingSeverity severity);
   RTCLoggingSeverity str2LogSeverity(std::string str);
 };

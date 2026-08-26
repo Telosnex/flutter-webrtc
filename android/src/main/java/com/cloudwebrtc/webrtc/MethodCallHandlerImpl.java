@@ -27,6 +27,7 @@ import com.cloudwebrtc.webrtc.audio.AudioDeviceKind;
 import com.cloudwebrtc.webrtc.audio.AudioProcessingController;
 import com.cloudwebrtc.webrtc.audio.AudioSwitchManager;
 import com.cloudwebrtc.webrtc.audio.AudioUtils;
+import com.cloudwebrtc.webrtc.audio.LocalAudioCaptureProcessor;
 import com.cloudwebrtc.webrtc.audio.LocalAudioTrack;
 import com.cloudwebrtc.webrtc.audio.PlaybackSamplesReadyCallbackAdapter;
 import com.cloudwebrtc.webrtc.audio.RecordSamplesReadyCallbackAdapter;
@@ -80,6 +81,10 @@ import org.webrtc.SessionDescription;
 import org.webrtc.SessionDescription.Type;
 import org.webrtc.VideoTrack;
 import org.webrtc.audio.AudioDeviceModule;
+import org.webrtc.audio.AudioProcessingComponentState;
+import org.webrtc.audio.AudioProcessingOptions;
+import org.webrtc.audio.AudioProcessingOptionsResult;
+import org.webrtc.audio.AudioProcessingState;
 import org.webrtc.audio.JavaAudioDeviceModule;
 import org.webrtc.video.CustomVideoDecoderFactory;
 import org.webrtc.video.CustomVideoEncoderFactory;
@@ -145,6 +150,7 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
   private CustomVideoDecoderFactory videoDecoderFactory;
 
   public AudioProcessingController audioProcessingController;
+  private LocalAudioCaptureProcessor localAudioCaptureProcessor;
 
   public static class LogSink implements Loggable {
     @Override
@@ -174,6 +180,19 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
   }
 
   void dispose() {
+    if (localAudioCaptureProcessor != null) {
+      int generation = localAudioCaptureProcessor.getActiveGeneration();
+      if (generation != 0 && audioDeviceModule != null) {
+        audioDeviceModule.requestStopRecording();
+        localAudioCaptureProcessor.deactivateGeneration(generation, "pluginDisposed");
+      }
+      if (audioProcessingController != null) {
+        audioProcessingController.capturePostProcessing.removeProcessor(
+            localAudioCaptureProcessor);
+      }
+      localAudioCaptureProcessor.close();
+      localAudioCaptureProcessor = null;
+    }
     for (final MediaStream mediaStream : localStreams.values()) {
       try {
         streamDispose(mediaStream);
@@ -357,6 +376,9 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
     videoEncoderFactory.setForceSWCodecList(forceSWCodecList);
 
     audioProcessingController = new AudioProcessingController();
+    localAudioCaptureProcessor = new LocalAudioCaptureProcessor(
+        event -> FlutterWebRTCPlugin.sharedSingleton.sendEvent(event));
+    audioProcessingController.capturePostProcessing.addProcessor(localAudioCaptureProcessor);
 
     factoryBuilder.setAudioProcessingFactory(audioProcessingController.externalAudioProcessingFactory);
 
@@ -1144,6 +1166,68 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
         }
         break;
       }
+      case "startLocalAudioCapture": {
+        if (audioDeviceModule == null || localAudioCaptureProcessor == null || mFactory == null) {
+          resultError("startLocalAudioCapture", "WebRTC audio factory is not initialized", result);
+          break;
+        }
+        if (localAudioCaptureProcessor.isActive()) {
+          resultError("startLocalAudioCapture", "Capture is already active", result);
+          break;
+        }
+        Map<String, Object> profile = call.argument("profile");
+        AudioProcessingOptions processingOptions = audioProcessingOptions(profile);
+        String trackId = call.argument("trackId");
+        AudioProcessingOptionsResult trackResult = applyTrackProcessingOptions(
+            trackId, processingOptions);
+        if (!trackResult.isSuccess()) {
+          resultError("startLocalAudioCapture", trackResult.message, result);
+          break;
+        }
+        int generation = localAudioCaptureProcessor.activate();
+        executor.execute(() -> {
+          try {
+            audioDeviceModule.requestStartRecording(processingOptions);
+            Map<String, Object> state = localAudioCaptureStateMap();
+            state.put("generation", generation);
+            state.put("trackOptionsResult", trackResult.code.name().toLowerCase());
+            mainHandler.post(() -> result.success(state));
+          } catch (Exception e) {
+            audioDeviceModule.requestStopRecording();
+            localAudioCaptureProcessor.deactivateGeneration(generation, "startFailed");
+            mainHandler.post(() -> resultError(
+                "startLocalAudioCapture", e.getMessage(), result));
+          }
+        });
+        break;
+      }
+      case "stopLocalAudioCapture": {
+        if (audioDeviceModule == null || localAudioCaptureProcessor == null) {
+          resultError("stopLocalAudioCapture", "WebRTC audio factory is not initialized", result);
+          break;
+        }
+        Number generationValue = call.argument("generation");
+        int generation = generationValue == null ? 0 : generationValue.intValue();
+        if (generation == 0
+            || generation != localAudioCaptureProcessor.getActiveGeneration()) {
+          resultError("stopLocalAudioCapture", "Capture generation is no longer active", result);
+          break;
+        }
+        executor.execute(() -> {
+          audioDeviceModule.requestStopRecording();
+          localAudioCaptureProcessor.deactivateGeneration(generation, "requested");
+          mainHandler.post(() -> result.success(null));
+        });
+        break;
+      }
+      case "getLocalAudioCaptureState": {
+        if (audioDeviceModule == null || localAudioCaptureProcessor == null || mFactory == null) {
+          resultError("getLocalAudioCaptureState", "WebRTC audio factory is not initialized", result);
+          break;
+        }
+        result.success(localAudioCaptureStateMap());
+        break;
+      }
       case "startLocalRecording": {
         executor.execute(() -> {
           audioDeviceModule.prewarmRecording();
@@ -1195,6 +1279,70 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
         result.notImplemented();
         break;
     }
+  }
+
+  private AudioProcessingOptions audioProcessingOptions(@Nullable Map<String, Object> profile) {
+    return new AudioProcessingOptions(
+        profileBoolean(profile, "echoCancellation", true),
+        profileBoolean(profile, "noiseSuppression", true),
+        profileBoolean(profile, "autoGainControl", true),
+        profileBoolean(profile, "highPassFilter", true));
+  }
+
+  private boolean profileBoolean(
+      @Nullable Map<String, Object> profile, String key, boolean fallback) {
+    if (profile == null) {
+      return fallback;
+    }
+    Object value = profile.get(key);
+    return value instanceof Boolean ? (Boolean) value : fallback;
+  }
+
+  private AudioProcessingOptionsResult applyTrackProcessingOptions(
+      @Nullable String trackId, AudioProcessingOptions options) {
+    LocalTrack localTrack = trackId == null ? null : getLocalTrack(trackId);
+    if (localTrack == null || !(localTrack.track instanceof AudioTrack)) {
+      return AudioProcessingOptionsResult.rejected(
+          AudioProcessingOptionsResult.Code.APPLY_FAILED,
+          "A controller-owned local audio track is required");
+    }
+    return ((AudioTrack) localTrack.track).setAudioProcessingOptions(options);
+  }
+
+  private Map<String, Object> localAudioCaptureStateMap() {
+    Map<String, Object> state = new HashMap<>();
+    boolean active = localAudioCaptureProcessor.isActive();
+    state.put("active", active);
+    state.put("generation", localAudioCaptureProcessor.getActiveGeneration());
+    state.put("clientRecordingDemand", active);
+    state.put("recording", active);
+    state.put("processedCallbacks", localAudioCaptureProcessor.getProcessedCallbacks());
+    state.put("processedFrames", localAudioCaptureProcessor.getProcessedFrames());
+    state.put("processingState", audioProcessingStateMap(mFactory.getAudioProcessingState()));
+    state.put("platformVoiceProcessingAllowed", false);
+    state.put("voiceProcessingBypassed", false);
+    return state;
+  }
+
+  private Map<String, Object> audioProcessingStateMap(AudioProcessingState processingState) {
+    Map<String, Object> state = new HashMap<>();
+    state.put("hasAudioProcessingModule", processingState.hasAudioProcessingModule);
+    state.put("echoCancellation", componentStateMap(processingState.echoCancellation));
+    state.put("noiseSuppression", componentStateMap(processingState.noiseSuppression));
+    state.put("autoGainControl", componentStateMap(processingState.autoGainControl));
+    state.put("highPassFilter", componentStateMap(processingState.highPassFilter));
+    return state;
+  }
+
+  private Map<String, Object> componentStateMap(AudioProcessingComponentState component) {
+    Map<String, Object> state = new HashMap<>();
+    state.put("softwareResolved", component.isSoftwareResolved);
+    state.put("softwareActive", component.isSoftwareActive);
+    state.put("platformAvailable", component.isPlatformAvailable);
+    state.put("platformResolved", component.isPlatformResolved);
+    state.put("platformActive", component.isPlatformActive);
+    state.put("effective", component.effective.name().toLowerCase());
+    return state;
   }
 
   private ConstraintsMap capabilitiestoMap(RtpCapabilities capabilities) {
