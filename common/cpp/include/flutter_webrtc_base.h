@@ -46,7 +46,11 @@ class FlutterWebRTCBase {
  public:
   FlutterWebRTCBase(BinaryMessenger* messenger,
                     TextureRegistrar* textures,
-                    TaskRunner* task_runner);
+                    TaskRunner* task_runner
+#if defined(__linux__)
+                    , RTCAudioBackend audio_backend
+#endif
+                    );
   ~FlutterWebRTCBase();
 
   virtual scoped_refptr<RTCAudioProcessing> audio_processing() {

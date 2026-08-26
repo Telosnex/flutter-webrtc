@@ -26,6 +26,12 @@ class FlutterWebRTCPlugin : public flutter::Plugin {
   virtual TextureRegistrar* textures() = 0;
 
   virtual TaskRunner* task_runner() = 0;
+
+#if defined(__linux__)
+  virtual RTCAudioBackend audio_backend() {
+    return RTCAudioBackend::kPlatformDefault;
+  }
+#endif
 };
 
 class FlutterWebRTC : public FlutterWebRTCBase,
