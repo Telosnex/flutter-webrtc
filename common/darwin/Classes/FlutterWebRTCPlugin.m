@@ -2950,11 +2950,74 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 
 #pragma mark - RTCAudioDeviceModuleDelegate methods
 
-- (void)audioDeviceModuleDidUpdateDevices:(RTCAudioDeviceModule *)audioDeviceModule {
-    NSLog(@"audioDeviceModule did update devices");
-    if (self.eventSink) {
-      postEvent( self.eventSink, @{@"event" : @"onDeviceChange"});
-    }
+- (void)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+    didReceiveSpeechActivityEvent:(RTCSpeechActivityEvent)speechActivityEvent {
+  // The default Flutter observer does not expose speech activity events.
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+               didCreateEngine:(AVAudioEngine*)engine {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+              willEnableEngine:(AVAudioEngine*)engine
+              isPlayoutEnabled:(BOOL)isPlayoutEnabled
+            isRecordingEnabled:(BOOL)isRecordingEnabled {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+               willStartEngine:(AVAudioEngine*)engine
+              isPlayoutEnabled:(BOOL)isPlayoutEnabled
+            isRecordingEnabled:(BOOL)isRecordingEnabled {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+                 didStopEngine:(AVAudioEngine*)engine
+              isPlayoutEnabled:(BOOL)isPlayoutEnabled
+            isRecordingEnabled:(BOOL)isRecordingEnabled {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+              didDisableEngine:(AVAudioEngine*)engine
+              isPlayoutEnabled:(BOOL)isPlayoutEnabled
+            isRecordingEnabled:(BOOL)isRecordingEnabled {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+             willReleaseEngine:(AVAudioEngine*)engine {
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+                        engine:(AVAudioEngine*)engine
+      configureInputFromSource:(AVAudioNode*)source
+                 toDestination:(AVAudioNode*)destination
+                    withFormat:(AVAudioFormat*)format
+                       context:(NSDictionary*)context {
+  // Returning success without adding a connection selects WebRTC's default
+  // input graph, which it installs immediately after this callback.
+  return 0;
+}
+
+- (NSInteger)audioDeviceModule:(RTCAudioDeviceModule*)audioDeviceModule
+                        engine:(AVAudioEngine*)engine
+     configureOutputFromSource:(AVAudioNode*)source
+                 toDestination:(AVAudioNode*)destination
+                    withFormat:(AVAudioFormat*)format
+                       context:(NSDictionary*)context {
+  return 0;
+}
+
+- (void)audioDeviceModuleDidUpdateDevices:(RTCAudioDeviceModule*)audioDeviceModule {
+  NSLog(@"audioDeviceModule did update devices");
+  if (self.eventSink) {
+    postEvent(self.eventSink, @{@"event" : @"onDeviceChange"});
+  }
 }
 
 @end
