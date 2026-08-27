@@ -77,8 +77,7 @@ void FlutterLocalAudioCapture::Process(int num_bands,
                                        float* buffer) {
   (void)num_bands;
   (void)num_frames;
-  const int32_t generation =
-      active_generation_.load(std::memory_order_acquire);
+  const int32_t generation = active_generation_.load(std::memory_order_acquire);
   if (generation == 0 || closed_.load(std::memory_order_relaxed) ||
       buffer == nullptr) {
     return;
@@ -175,11 +174,9 @@ void FlutterLocalAudioCapture::EmitFormat(const Frame& frame) {
   EncodableMap event;
   event[EncodableValue("event")] = EncodableValue("onLocalAudioFormat");
   event[EncodableValue("generation")] = EncodableValue(frame.generation);
-  event[EncodableValue("sampleRateHz")] =
-      EncodableValue(frame.sample_rate_hz);
+  event[EncodableValue("sampleRateHz")] = EncodableValue(frame.sample_rate_hz);
   event[EncodableValue("channels")] = EncodableValue(1);
-  event[EncodableValue("inputChannels")] =
-      EncodableValue(frame.input_channels);
+  event[EncodableValue("inputChannels")] = EncodableValue(frame.input_channels);
   event[EncodableValue("encoding")] = EncodableValue("pcmS16le");
   emitter_(event);
 }
@@ -193,9 +190,11 @@ void FlutterLocalAudioCapture::EmitFrames(
   for (size_t batch_index = 0; batch_index < batch_size; ++batch_index) {
     const Frame& frame = *batch[batch_index];
     for (size_t index = 0; index < frame.sample_count; ++index) {
-      const float value = std::clamp(frame.samples[index], -1.0f, 1.0f);
-      const int16_t sample = static_cast<int16_t>(std::lround(
-          value * (value < 0.0f ? 32768.0f : 32767.0f)));
+      // AudioBuffer channels use WebRTC's FloatS16 scale, not normalized
+      // floating point: [-32768.0, 32768.0], where 1.0 is one PCM unit.
+      // Scaling these values by 32768 hard-clips ordinary capture samples.
+      const float value = std::clamp(frame.samples[index], -32768.0f, 32767.0f);
+      const int16_t sample = static_cast<int16_t>(std::lround(value));
       pcm[output++] = static_cast<uint8_t>(sample & 0xff);
       pcm[output++] = static_cast<uint8_t>((sample >> 8) & 0xff);
     }
@@ -203,8 +202,7 @@ void FlutterLocalAudioCapture::EmitFrames(
 
   EncodableMap event;
   event[EncodableValue("event")] = EncodableValue("onLocalAudioFrame");
-  event[EncodableValue("generation")] =
-      EncodableValue(batch[0]->generation);
+  event[EncodableValue("generation")] = EncodableValue(batch[0]->generation);
   event[EncodableValue("sequence")] = EncodableValue(output_sequence_++);
   event[EncodableValue("frameCount")] =
       EncodableValue(static_cast<int64_t>(sample_count));

@@ -35,8 +35,14 @@ int main() {
   const int32_t generation = capture.Activate();
   assert(generation == 1);
 
-  float samples[480];
-  std::fill(std::begin(samples), std::end(samples), 0.5f);
+  float samples[480] = {};
+  samples[0] = -40000.0f;
+  samples[1] = -1234.0f;
+  samples[2] = -1.0f;
+  samples[3] = 0.0f;
+  samples[4] = 1.0f;
+  samples[5] = 1234.0f;
+  samples[6] = 40000.0f;
   // Desktop passes full-band num_frames and the exact mono float count in
   // buffer_size, even when num_bands reports the APM split-band count.
   for (int index = 0; index < 4; ++index) {
@@ -54,6 +60,29 @@ int main() {
 
   assert(capture.processed_callbacks() == 4);
   assert(capture.processed_frames() == 1920);
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto frame =
+        std::find_if(events.begin(), events.end(), [](const auto& event) {
+          return EventName(event) == "onLocalAudioFrame";
+        });
+    assert(frame != events.end());
+    const auto pcm_value = frame->find(EncodableValue("pcm"));
+    assert(pcm_value != frame->end());
+    const auto& pcm = GetValue<std::vector<uint8_t>>(pcm_value->second);
+    auto sample = [&pcm](size_t index) {
+      return static_cast<int16_t>(
+          static_cast<uint16_t>(pcm[index * 2]) |
+          (static_cast<uint16_t>(pcm[index * 2 + 1]) << 8));
+    };
+    assert(sample(0) == -32768);
+    assert(sample(1) == -1234);
+    assert(sample(2) == -1);
+    assert(sample(3) == 0);
+    assert(sample(4) == 1);
+    assert(sample(5) == 1234);
+    assert(sample(6) == 32767);
+  }
   assert(capture.Deactivate(generation, "test"));
   const int64_t callbacks = capture.processed_callbacks();
   capture.Process(3, 480, 480, samples);
