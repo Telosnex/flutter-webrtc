@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 
 import 'package:webrtc_interface/webrtc_interface.dart';
 
+import 'audio_route.dart';
+import 'event_channel.dart';
 import 'local_audio_capture.dart';
 import 'local_audio_capture_backend.dart'
     if (dart.library.js_interop) '../web/local_audio_capture_backend.dart';
@@ -29,6 +31,34 @@ enum MicrophoneMuteMode {
 }
 
 class NativeAudioManagement {
+  static Future<AudioRoute?> getCurrentAudioRoute() async {
+    if (kIsWeb) return null;
+
+    try {
+      final result = await WebRTC.invokeMethod(
+        'getCurrentAudioRoute',
+        <String, dynamic>{},
+      );
+      return result is Map ? AudioRoute.fromMap(result) : null;
+    } on MissingPluginException {
+      // Older or unsupported native implementations have no global route.
+      return null;
+    }
+  }
+
+  static Stream<AudioRoute> get onAudioRouteChanged {
+    if (kIsWeb) return const Stream<AudioRoute>.empty();
+
+    return FlutterWebRTCEventChannel.instance.handleEvents.stream
+        .where((events) => events.containsKey('onAudioRouteChanged'))
+        .map((events) {
+          final event = events['onAudioRouteChanged'];
+          return event is Map ? decodeAudioRouteEvent(event) : null;
+        })
+        .where((route) => route != null)
+        .cast<AudioRoute>();
+  }
+
   static Future<void> selectAudioInput(String deviceId) async {
     await WebRTC.invokeMethod('selectAudioInput', <String, dynamic>{
       'deviceId': deviceId,

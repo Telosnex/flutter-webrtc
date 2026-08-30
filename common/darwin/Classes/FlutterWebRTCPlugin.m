@@ -28,6 +28,9 @@
 #if TARGET_OS_OSX || TARGET_OS_MACCATALYST
 #import <CoreGraphics/CoreGraphics.h>
 #endif
+#if TARGET_OS_OSX
+#import <CoreAudio/CoreAudio.h>
+#endif
 
 #import "LocalTrack.h"
 #import "LocalAudioCaptureProcessor.h"
@@ -108,6 +111,87 @@ void postEvent(FlutterEventSink _Nullable sink, id _Nullable event) {
     });
 }
 
+#if TARGET_OS_OSX
+static NSString* AudioObjectStringProperty(AudioObjectID objectId,
+                                           AudioObjectPropertySelector selector) {
+  AudioObjectPropertyAddress address = {
+      selector, kAudioObjectPropertyScopeGlobal,
+      kAudioObjectPropertyElementMain};
+  CFStringRef value = NULL;
+  UInt32 size = sizeof(value);
+  OSStatus status =
+      AudioObjectGetPropertyData(objectId, &address, 0, NULL, &size, &value);
+  if (status != noErr || value == NULL) return nil;
+  return CFBridgingRelease(value);
+}
+
+static AudioDeviceID AudioDeviceIdForUid(NSString* uid) {
+  if (uid.length == 0) return kAudioObjectUnknown;
+  CFStringRef uidRef = (__bridge CFStringRef)uid;
+  AudioDeviceID deviceId = kAudioObjectUnknown;
+  AudioValueTranslation translation = {
+      .mInputData = &uidRef,
+      .mInputDataSize = sizeof(uidRef),
+      .mOutputData = &deviceId,
+      .mOutputDataSize = sizeof(deviceId),
+  };
+  AudioObjectPropertyAddress address = {
+      kAudioHardwarePropertyDeviceForUID, kAudioObjectPropertyScopeGlobal,
+      kAudioObjectPropertyElementMain};
+  UInt32 size = sizeof(translation);
+  OSStatus status = AudioObjectGetPropertyData(
+      kAudioObjectSystemObject, &address, 0, NULL, &size, &translation);
+  return status == noErr ? deviceId : kAudioObjectUnknown;
+}
+
+static AudioDeviceID DefaultOutputAudioDeviceId(void) {
+  AudioDeviceID deviceId = kAudioObjectUnknown;
+  AudioObjectPropertyAddress address = {
+      kAudioHardwarePropertyDefaultOutputDevice,
+      kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+  UInt32 size = sizeof(deviceId);
+  OSStatus status = AudioObjectGetPropertyData(
+      kAudioObjectSystemObject, &address, 0, NULL, &size, &deviceId);
+  return status == noErr ? deviceId : kAudioObjectUnknown;
+}
+
+static NSString* AudioRouteKindForMacDevice(AudioDeviceID deviceId) {
+  AudioObjectPropertyAddress address = {
+      kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal,
+      kAudioObjectPropertyElementMain};
+  UInt32 transport = 0;
+  UInt32 size = sizeof(transport);
+  if (AudioObjectGetPropertyData(deviceId, &address, 0, NULL, &size,
+                                 &transport) != noErr) {
+    return @"device";
+  }
+  if (transport == kAudioDeviceTransportTypeBuiltIn) return @"speaker";
+  if (transport == kAudioDeviceTransportTypeBluetooth ||
+      transport == kAudioDeviceTransportTypeBluetoothLE) {
+    return @"bluetooth";
+  }
+  if (transport == kAudioDeviceTransportTypeAirPlay) return @"airPlay";
+  return @"device";
+}
+
+static NSDictionary* AudioRouteMapForMacDevice(AudioDeviceID deviceId,
+                                                NSString* fallbackId,
+                                                NSString* fallbackLabel) {
+  NSString* uid = AudioObjectStringProperty(
+      deviceId, kAudioDevicePropertyDeviceUID);
+  NSString* name =
+      AudioObjectStringProperty(deviceId, kAudioObjectPropertyName);
+  uid = uid.length > 0 ? uid : fallbackId;
+  name = name.length > 0 ? name : fallbackLabel;
+  if (uid.length == 0 && name.length == 0) return nil;
+  return @{
+    @"id" : uid ?: @"",
+    @"label" : name ?: @"",
+    @"kind" : AudioRouteKindForMacDevice(deviceId),
+  };
+}
+#endif
+
 @implementation FlutterWebRTCPlugin {
 #pragma clang diagnostic pop
   FlutterMethodChannel* _methodChannel;
@@ -125,6 +209,10 @@ void postEvent(FlutterEventSink _Nullable sink, id _Nullable event) {
   BOOL _localAudioCaptureStopPending;
 #if TARGET_OS_IPHONE || TARGET_OS_OSX
   FlutterRTCVideoPlatformViewFactory *_platformViewFactory;
+#endif
+#if TARGET_OS_OSX
+  AudioObjectPropertyListenerBlock _defaultOutputDeviceListener;
+  BOOL _defaultOutputDeviceListenerRegistered;
 #endif
 
   RTC_OBJC_TYPE(RTCCallbackLogger) * loggerCallback;
@@ -350,11 +438,17 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
                                                name:AVAudioSessionRouteChangeNotification
                                              object:session];
 #endif
+#if TARGET_OS_OSX
+  [self registerDefaultOutputDeviceListener];
+#endif
 
   return self;
 }
 
 - (void)detachFromEngineForRegistrar:(NSObject<FlutterPluginRegistrar>*)registrar {
+#if TARGET_OS_OSX
+  [self unregisterDefaultOutputDeviceListener];
+#endif
   for (RTCPeerConnection* peerConnection in _peerConnections.allValues) {
     for (RTCDataChannel* dataChannel in peerConnection.dataChannels) {
       dataChannel.eventSink = nil;
@@ -379,6 +473,101 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
   return nil;
 }
 
+- (NSDictionary*)currentAudioRouteMap {
+#if TARGET_OS_IPHONE
+  AVAudioSessionPortDescription* port =
+      [AVAudioSession sharedInstance].currentRoute.outputs.firstObject;
+  if (port == nil) return nil;
+
+  NSString* kind = @"unknown";
+  if ([port.portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) {
+    kind = @"speaker";
+  } else if ([port.portType isEqualToString:AVAudioSessionPortBuiltInReceiver]) {
+    kind = @"receiver";
+  } else if ([port.portType isEqualToString:AVAudioSessionPortHeadphones] ||
+             [port.portType isEqualToString:AVAudioSessionPortHeadsetMic] ||
+             [port.portType isEqualToString:AVAudioSessionPortLineOut] ||
+             [port.portType isEqualToString:AVAudioSessionPortUSBAudio]) {
+    kind = @"wired";
+  } else if ([port.portType isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
+             [port.portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+             [port.portType isEqualToString:AVAudioSessionPortBluetoothLE]) {
+    kind = @"bluetooth";
+  } else if ([port.portType isEqualToString:AVAudioSessionPortAirPlay]) {
+    kind = @"airPlay";
+  }
+  return @{
+    @"id" : port.UID ?: port.portType ?: @"",
+    @"label" : port.portName ?: port.portType ?: @"",
+    @"kind" : kind,
+  };
+#elif TARGET_OS_OSX
+  RTCAudioDeviceModule* adm = self.peerConnectionFactory.audioDeviceModule;
+  RTCIODevice* selected = adm.outputDevice;
+  if (selected != nil && !selected.isDefault) {
+    AudioDeviceID selectedId = AudioDeviceIdForUid(selected.deviceId);
+    if (selectedId != kAudioObjectUnknown) {
+      return AudioRouteMapForMacDevice(selectedId, selected.deviceId,
+                                       selected.name);
+    }
+    // The selected endpoint disappeared. Resolve the concrete system default
+    // instead of reporting the stale RTCIODevice retained by the ADM.
+  }
+
+  AudioDeviceID defaultId = DefaultOutputAudioDeviceId();
+  if (defaultId == kAudioObjectUnknown) return nil;
+  return AudioRouteMapForMacDevice(defaultId, nil, nil);
+#else
+  return nil;
+#endif
+}
+
+- (void)postAudioRouteChanged {
+  NSDictionary* route = [self currentAudioRouteMap];
+  if (self.eventSink != nil && route != nil) {
+    postEvent(self.eventSink,
+              @{@"event" : @"onAudioRouteChanged", @"route" : route});
+  }
+}
+
+#if TARGET_OS_OSX
+- (void)registerDefaultOutputDeviceListener {
+  if (_defaultOutputDeviceListenerRegistered) return;
+  AudioObjectPropertyAddress address = {
+      kAudioHardwarePropertyDefaultOutputDevice,
+      kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+  __weak FlutterWebRTCPlugin* weakSelf = self;
+  _defaultOutputDeviceListener =
+      ^(UInt32 numberAddresses, const AudioObjectPropertyAddress* addresses) {
+        FlutterWebRTCPlugin* strongSelf = weakSelf;
+        [strongSelf postAudioRouteChanged];
+      };
+  OSStatus status = AudioObjectAddPropertyListenerBlock(
+      kAudioObjectSystemObject, &address, dispatch_get_main_queue(),
+      _defaultOutputDeviceListener);
+  _defaultOutputDeviceListenerRegistered = status == noErr;
+  if (status != noErr) {
+    NSLog(@"Failed to observe default output device: %d", (int)status);
+    _defaultOutputDeviceListener = nil;
+  }
+}
+
+- (void)unregisterDefaultOutputDeviceListener {
+  if (!_defaultOutputDeviceListenerRegistered ||
+      _defaultOutputDeviceListener == nil) {
+    return;
+  }
+  AudioObjectPropertyAddress address = {
+      kAudioHardwarePropertyDefaultOutputDevice,
+      kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+  AudioObjectRemovePropertyListenerBlock(
+      kAudioObjectSystemObject, &address, dispatch_get_main_queue(),
+      _defaultOutputDeviceListener);
+  _defaultOutputDeviceListenerRegistered = NO;
+  _defaultOutputDeviceListener = nil;
+}
+#endif
+
 - (void)didSessionRouteChange:(NSNotification*)notification {
 #if TARGET_OS_IPHONE
   NSDictionary* interuptionDict = notification.userInfo;
@@ -390,6 +579,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
        routeChangeReason == AVAudioSessionRouteChangeReasonCategoryChange ||
        routeChangeReason == AVAudioSessionRouteChangeReasonOverride)) {
     postEvent(self.eventSink, @{@"event" : @"onDeviceChange"});
+    [self postAudioRouteChanged];
   }
 #endif
 }
@@ -590,6 +780,8 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
     [self createLocalMediaStream:result];
   } else if ([@"getSources" isEqualToString:call.method]) {
     [self getSources:result];
+  } else if ([@"getCurrentAudioRoute" isEqualToString:call.method]) {
+    result([self currentAudioRouteMap]);
   } else if ([@"selectAudioInput" isEqualToString:call.method]) {
     NSDictionary* argsMap = call.arguments;
     NSString* deviceId = argsMap[@"deviceId"];
@@ -2025,6 +2217,9 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 }
 
 - (void)dealloc {
+#if TARGET_OS_OSX
+  [self unregisterDefaultOutputDeviceListener];
+#endif
   if (_localAudioCaptureProcessor != nil) {
     if (_localAudioCaptureProcessor.isActive) {
       [_localAudioCaptureProcessor
@@ -3017,6 +3212,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
   NSLog(@"audioDeviceModule did update devices");
   if (self.eventSink) {
     postEvent(self.eventSink, @{@"event" : @"onDeviceChange"});
+    [self postAudioRouteChanged];
   }
 }
 

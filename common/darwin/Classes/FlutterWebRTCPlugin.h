@@ -104,6 +104,8 @@ typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
 - (BOOL)hasLocalAudioTrack;
 - (void)ensureAudioSession;
 - (void)deactiveRtcAudioSession;
+- (NSDictionary* _Nullable)currentAudioRouteMap;
+- (void)postAudioRouteChanged;
 
 - (RTCRtpReceiver* _Nullable)getRtpReceiverById:(RTCPeerConnection* _Nonnull)peerConnection
                                              Id:(NSString* _Nonnull)Id;

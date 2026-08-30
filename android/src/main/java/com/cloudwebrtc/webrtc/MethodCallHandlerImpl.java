@@ -838,6 +838,11 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
         result.success(null);
         break;
       }
+      case "getCurrentAudioRoute": {
+        result.success(AudioDeviceKind.toAudioRouteMap(
+                AudioSwitchManager.instance.selectedAudioDevice()));
+        break;
+      }
       case "selectAudioOutput": {
         String deviceId = call.argument("deviceId");
         AudioSwitchManager.instance.selectAudioOutput(AudioDeviceKind.fromTypeName(deviceId));

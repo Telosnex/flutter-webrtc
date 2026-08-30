@@ -17,8 +17,9 @@ A new flutter plugin project.
 
   s.dependency 'FlutterMacOS'
   s.weak_frameworks = 'ScreenCaptureKit'
+  s.frameworks = 'CoreAudio'
   # Telosnex app Podfiles resolve this from an immutable :podspec URL.
-  s.dependency 'WebRTC-SDK', '144.7559.09-telosnex.04'
+  s.dependency 'WebRTC-SDK', '144.7559.09-telosnex.05'
   s.osx.deployment_target = '10.15'
   s.pod_target_xcconfig = {
     'USER_HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/flutter_webrtc/Sources/flutter_webrtc/include/flutter_webrtc"'

@@ -46,6 +46,12 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
   static const _elementIdForAudioManager = 'html_webrtc_audio_manager_list';
 
   web.HTMLAudioElement? _audioElement;
+  String? _sinkId;
+
+  /// The browser output device last successfully applied to this renderer.
+  ///
+  /// Web output routing is renderer-local rather than app-wide.
+  String? get sinkId => _sinkId;
 
   static int _textureCounter = 1;
 
@@ -255,7 +261,7 @@ class RTCVideoRenderer extends ValueNotifier<RTCVideoValue>
           element.getProperty('setSinkId'.toJS).isDefinedAndNotNull) {
         await (element.callMethod('setSinkId'.toJS, deviceId.toJS) as JSPromise)
             .toDart;
-
+        _sinkId = deviceId;
         return true;
       }
     } catch (e) {

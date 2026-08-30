@@ -23,6 +23,8 @@ class FlutterMediaStream {
 
   void GetSources(std::unique_ptr<MethodResultProxy> result);
 
+  void GetCurrentAudioRoute(std::unique_ptr<MethodResultProxy> result);
+
   void SelectAudioOutput(const std::string& device_id,
                          std::unique_ptr<MethodResultProxy> result);
 
@@ -49,6 +51,9 @@ class FlutterMediaStream {
   void OnDeviceChange();
 
  private:
+  bool CurrentAudioRoute(EncodableMap& route);
+  void PostAudioRouteChanged();
+
   FlutterWebRTCBase* base_;
 };
 

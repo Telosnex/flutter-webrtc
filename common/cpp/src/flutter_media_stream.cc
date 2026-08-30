@@ -31,10 +31,11 @@ std::string SanitizeDeviceIdFromVideoBuffers(const char* name, const char* guid)
 }  // namespace
 
 FlutterMediaStream::FlutterMediaStream(FlutterWebRTCBase* base) : base_(base) {
-  base_->audio_device_->OnDeviceChange([&] {
+  base_->audio_device_->OnDeviceChange([this] {
     EncodableMap info;
     info[EncodableValue("event")] = "onDeviceChange";
     base_->event_channel()->Success(EncodableValue(info), false);
+    PostAudioRouteChanged();
   });
 }
 
@@ -481,6 +482,41 @@ void FlutterMediaStream::GetSources(std::unique_ptr<MethodResultProxy> result) {
   result->Success(EncodableValue(params));
 }
 
+bool FlutterMediaStream::CurrentAudioRoute(EncodableMap& route) {
+  char name[RTCAudioDevice::kAdmMaxDeviceNameSize] = {0};
+  char guid[RTCAudioDevice::kAdmMaxGuidSize] = {0};
+  if (base_->audio_device_->ActivePlayoutDeviceName(name, guid) != 0) {
+    return false;
+  }
+
+  const std::string id = SanitizeDeviceIdFromAudioBuffers(name, guid);
+  const std::string label = SanitizeLabel(name);
+  if (id.empty() && label.empty()) return false;
+  route[EncodableValue("id")] = EncodableValue(id);
+  route[EncodableValue("label")] = EncodableValue(label);
+  route[EncodableValue("kind")] = EncodableValue("device");
+  return true;
+}
+
+void FlutterMediaStream::GetCurrentAudioRoute(
+    std::unique_ptr<MethodResultProxy> result) {
+  EncodableMap route;
+  if (!CurrentAudioRoute(route)) {
+    result->Success();
+    return;
+  }
+  result->Success(EncodableValue(route));
+}
+
+void FlutterMediaStream::PostAudioRouteChanged() {
+  EncodableMap route;
+  if (!CurrentAudioRoute(route)) return;
+  EncodableMap event;
+  event[EncodableValue("event")] = EncodableValue("onAudioRouteChanged");
+  event[EncodableValue("route")] = EncodableValue(route);
+  base_->event_channel()->Success(EncodableValue(event), false);
+}
+
 void FlutterMediaStream::SelectAudioOutput(
     const std::string& device_id,
     std::unique_ptr<MethodResultProxy> result) {
@@ -493,7 +529,13 @@ void FlutterMediaStream::SelectAudioOutput(
     std::string cur_device_id =
         SanitizeDeviceIdFromAudioBuffers(deviceName, deviceGuid);
     if (device_id != "" && device_id == cur_device_id) {
-      base_->audio_device_->SetPlayoutDevice(i);
+      const int32_t set_result = base_->audio_device_->SetPlayoutDevice(i);
+      if (set_result != 0) {
+        result->Error("selectAudioOutputFailed",
+                      "Failed to select device id: " +
+                          SanitizeUtf8ForFlutter(device_id));
+        return;
+      }
       found = true;
       break;
     }
@@ -518,7 +560,13 @@ void FlutterMediaStream::SelectAudioInput(
     std::string cur_device_id =
         SanitizeDeviceIdFromAudioBuffers(deviceName, deviceGuid);
     if (device_id != "" && device_id == cur_device_id) {
-      base_->audio_device_->SetRecordingDevice(i);
+      const int32_t set_result = base_->audio_device_->SetRecordingDevice(i);
+      if (set_result != 0) {
+        result->Error("selectAudioInputFailed",
+                      "Failed to select device id: " +
+                          SanitizeUtf8ForFlutter(device_id));
+        return;
+      }
       found = true;
       break;
     }

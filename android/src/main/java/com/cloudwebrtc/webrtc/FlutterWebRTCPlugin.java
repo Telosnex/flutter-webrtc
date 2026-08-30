@@ -12,6 +12,7 @@ import androidx.lifecycle.DefaultLifecycleObserver;
 import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleOwner;
 
+import com.cloudwebrtc.webrtc.audio.AudioDeviceKind;
 import com.cloudwebrtc.webrtc.audio.AudioProcessingController;
 import com.cloudwebrtc.webrtc.audio.AudioSwitchManager;
 import com.cloudwebrtc.webrtc.utils.AnyThreadSink;
@@ -22,6 +23,8 @@ import org.webrtc.MediaStream;
 import org.webrtc.MediaStreamTrack;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.audio.JavaAudioDeviceModule;
+
+import java.util.Map;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
@@ -140,6 +143,14 @@ public class FlutterWebRTCPlugin implements FlutterPlugin, ActivityAware, EventC
             ConstraintsMap params = new ConstraintsMap();
             params.putString("event", "onDeviceChange");
             sendEvent(params.toMap());
+
+            Map<String, Object> route = AudioDeviceKind.toAudioRouteMap(currentDevice);
+            if (route != null) {
+                ConstraintsMap routeEvent = new ConstraintsMap();
+                routeEvent.putString("event", "onAudioRouteChanged");
+                routeEvent.putMap("route", route);
+                sendEvent(routeEvent.toMap());
+            }
             return null;
         };
     }
