@@ -130,6 +130,19 @@ class Helper {
         .selectAudioOutput(AudioOutputOptions(deviceId: deviceId));
   }
 
+  /// Returns the output route currently used for native WebRTC playout.
+  ///
+  /// The route is app-wide on native platforms. Browsers select an output per
+  /// [RTCVideoRenderer], so this returns `null` on web.
+  static Future<AudioRoute?> getCurrentAudioRoute() =>
+      NativeAudioManagement.getCurrentAudioRoute();
+
+  /// Emits the new active native output route after a route change.
+  ///
+  /// This stream is empty on web, where output selection is renderer-local.
+  static Stream<AudioRoute> get onAudioRouteChanged =>
+      NativeAudioManagement.onAudioRouteChanged;
+
   /// Set audio input device for Flutter native
   /// Note: The usual practice in flutter web is to use deviceId as the
   /// `getUserMedia` parameter to get a new audio track and replace it with the

@@ -792,8 +792,14 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
   NSArray* outputDevices = [audioDeviceModule outputDevices];
   for (RTCIODevice* device in outputDevices) {
     if ([deviceId isEqualToString:device.deviceId]) {
-      [audioDeviceModule setOutputDevice:device];
-      result(nil);
+      if ([audioDeviceModule trySetOutputDevice:device]) {
+        result(nil);
+        [self postAudioRouteChanged];
+      } else {
+        result([FlutterError errorWithCode:@"selectAudioOutputFailed"
+                                   message:@"Error: failed to select output device"
+                                   details:nil]);
+      }
       return;
     }
   }
