@@ -510,13 +510,36 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
       return AudioRouteMapForMacDevice(selectedId, selected.deviceId,
                                        selected.name);
     }
-    // The selected endpoint disappeared. Resolve the concrete system default
-    // instead of reporting the stale RTCIODevice retained by the ADM.
+    // RTCIODevice identifiers are not guaranteed to be CoreAudio UIDs. If
+    // the selected endpoint is still in the ADM's device list, preserve that
+    // authoritative identifier instead of degrading a successful explicit
+    // selection to a null route (which makes Dart wait forever for
+    // confirmation). Do not report an endpoint that has disappeared.
+    for (RTCIODevice* available in adm.outputDevices) {
+      if ([available.deviceId isEqualToString:selected.deviceId]) {
+        return @{
+          @"id" : selected.deviceId ?: @"",
+          @"label" : selected.name ?: @"",
+          @"kind" : @"device",
+        };
+      }
+    }
   }
 
   AudioDeviceID defaultId = DefaultOutputAudioDeviceId();
-  if (defaultId == kAudioObjectUnknown) return nil;
-  return AudioRouteMapForMacDevice(defaultId, nil, nil);
+  if (defaultId != kAudioObjectUnknown) {
+    return AudioRouteMapForMacDevice(defaultId, nil, nil);
+  }
+  // Some sandboxed/virtual-device configurations do not expose CoreAudio's
+  // default-device property even though the ADM has a valid default endpoint.
+  if (selected != nil) {
+    return @{
+      @"id" : selected.deviceId ?: @"",
+      @"label" : selected.name ?: @"",
+      @"kind" : @"systemDefault",
+    };
+  }
+  return nil;
 #else
   return nil;
 #endif

@@ -740,6 +740,10 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
     [sources addObject:@{
       @"deviceId" : device.deviceId,
       @"label" : device.name,
+      // RTC exposes the system-following alias and its current concrete
+      // endpoint with the same label. Preserve that distinction for clients
+      // so they do not render two indistinguishable physical devices.
+      @"groupId" : device.isDefault ? @"telosnex:system-default" : @"",
       @"kind" : @"audiooutput",
     }];
   }
