@@ -705,8 +705,10 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
     }];
   }
 
+  NSMutableSet<NSString*>* outputIds = [NSMutableSet set];
   for (AVAudioSessionPortDescription* port in session.currentRoute.outputs) {
-    // NSLog(@"output portName: %@, type %@", port.portName,port.portType);
+    // iOS exposes only the active output route. Speaker remains a useful
+    // explicit action while another call route is active.
     if (session.currentRoute.outputs.count == 1 && ![port.UID isEqualToString:@"Speaker"]) {
       [sources addObject:@{
         @"deviceId" : @"Speaker",
@@ -714,6 +716,7 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
         @"groupId" : @"Speaker",
         @"kind" : @"audiooutput",
       }];
+      [outputIds addObject:@"Speaker"];
     }
     [sources addObject:@{
       @"deviceId" : port.UID,
@@ -721,6 +724,25 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
       @"groupId" : port.portType,
       @"kind" : @"audiooutput",
     }];
+    [outputIds addObject:port.UID];
+  }
+
+  // There is no public complete-output enumeration API on iOS. For a
+  // play-and-record call, however, selecting an external input selects its
+  // paired output route as well. Keep those connected call routes visible even
+  // after the user explicitly switches to Speaker.
+  for (AVAudioSessionPortDescription* port in session.session.availableInputs) {
+    if ([port.portType isEqualToString:AVAudioSessionPortBuiltInMic] ||
+        [outputIds containsObject:port.UID]) {
+      continue;
+    }
+    [sources addObject:@{
+      @"deviceId" : port.UID,
+      @"label" : port.portName,
+      @"groupId" : @"telosnex:ios-call-route",
+      @"kind" : @"audiooutput",
+    }];
+    [outputIds addObject:port.UID];
   }
 #endif
 #if TARGET_OS_OSX
@@ -823,6 +845,22 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
   } else {
     [session.session overrideOutputAudioPort:kAudioSessionOverrideAudioRoute_None
                                        error:&setCategoryError];
+    if (setCategoryError == nil) {
+      for (AVAudioSessionPortDescription* port in
+           session.session.availableInputs) {
+        if (![port.UID isEqualToString:deviceId]) continue;
+        NSError* preferredInputError = nil;
+        [session lockForConfiguration];
+        [session setPreferredInput:port error:&preferredInputError];
+        [session unlockForConfiguration];
+        if (preferredInputError != nil) {
+          setCategoryError = preferredInputError;
+        } else {
+          self.preferredInput = port.portType;
+        }
+        break;
+      }
+    }
   }
 
   if (setCategoryError == nil) {
