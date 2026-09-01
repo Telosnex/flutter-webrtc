@@ -819,6 +819,7 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
   for (RTCIODevice* device in outputDevices) {
     if ([deviceId isEqualToString:device.deviceId]) {
       if ([audioDeviceModule trySetOutputDevice:device]) {
+        self.selectedAudioOutputDeviceId = device.deviceId;
         result(nil);
         [self postAudioRouteChanged];
       } else {

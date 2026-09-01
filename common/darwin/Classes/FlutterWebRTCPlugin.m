@@ -190,6 +190,20 @@ static NSDictionary* AudioRouteMapForMacDevice(AudioDeviceID deviceId,
     @"kind" : AudioRouteKindForMacDevice(deviceId),
   };
 }
+
+static NSDictionary* AudioRouteMapForMacRtcDevice(RTCIODevice* device) {
+  if (device == nil) return nil;
+  AudioDeviceID deviceId = AudioDeviceIdForUid(device.deviceId);
+  if (deviceId != kAudioObjectUnknown) {
+    return AudioRouteMapForMacDevice(deviceId, device.deviceId, device.name);
+  }
+  if (device.deviceId.length == 0 && device.name.length == 0) return nil;
+  return @{
+    @"id" : device.deviceId ?: @"",
+    @"label" : device.name ?: @"",
+    @"kind" : device.isDefault ? @"systemDefault" : @"device",
+  };
+}
 #endif
 
 @implementation FlutterWebRTCPlugin {
@@ -389,6 +403,9 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
     _messenger = messenger;
     _speakerOn = NO;
     _speakerOnButPreferBluetooth = NO;
+#if TARGET_OS_OSX
+    _selectedAudioOutputDeviceId = @"default";
+#endif
     _eventChannel = eventChannel;
     _audioManager = AudioManager.sharedInstance;
     _localAudioCaptureStopPending = NO;
@@ -503,43 +520,59 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
   };
 #elif TARGET_OS_OSX
   RTCAudioDeviceModule* adm = self.peerConnectionFactory.audioDeviceModule;
-  RTCIODevice* selected = adm.outputDevice;
-  if (selected != nil && !selected.isDefault) {
-    AudioDeviceID selectedId = AudioDeviceIdForUid(selected.deviceId);
-    if (selectedId != kAudioObjectUnknown) {
-      return AudioRouteMapForMacDevice(selectedId, selected.deviceId,
-                                       selected.name);
-    }
-    // RTCIODevice identifiers are not guaranteed to be CoreAudio UIDs. If
-    // the selected endpoint is still in the ADM's device list, preserve that
-    // authoritative identifier instead of degrading a successful explicit
-    // selection to a null route (which makes Dart wait forever for
-    // confirmation). Do not report an endpoint that has disappeared.
-    for (RTCIODevice* available in adm.outputDevices) {
-      if ([available.deviceId isEqualToString:selected.deviceId]) {
-        return @{
-          @"id" : selected.deviceId ?: @"",
-          @"label" : selected.name ?: @"",
-          @"kind" : @"device",
-        };
+  NSArray<RTCIODevice*>* availableOutputs = adm.outputDevices;
+  NSString* selectedId = self.selectedAudioOutputDeviceId;
+
+  // AudioEngine ADM does not implement GetPlayoutDevice, which makes
+  // `adm.outputDevice` nil even after SetPlayoutDevice succeeds. Preserve the
+  // last device accepted by the ADM as the authoritative explicit selection.
+  if (selectedId.length > 0 && ![selectedId isEqualToString:@"default"]) {
+    for (RTCIODevice* available in availableOutputs) {
+      if ([available.deviceId isEqualToString:selectedId]) {
+        return AudioRouteMapForMacRtcDevice(available);
       }
     }
+    // The explicit endpoint disappeared; resume following the system default.
+    self.selectedAudioOutputDeviceId = @"default";
+  }
+
+  // Keep compatibility with ADMs that do implement GetPlayoutDevice.
+  RTCIODevice* selected = adm.outputDevice;
+  if (selected != nil && !selected.isDefault) {
+    self.selectedAudioOutputDeviceId = selected.deviceId;
+    return AudioRouteMapForMacRtcDevice(selected);
   }
 
   AudioDeviceID defaultId = DefaultOutputAudioDeviceId();
   if (defaultId != kAudioObjectUnknown) {
     return AudioRouteMapForMacDevice(defaultId, nil, nil);
   }
-  // Some sandboxed/virtual-device configurations do not expose CoreAudio's
-  // default-device property even though the ADM has a valid default endpoint.
-  if (selected != nil) {
-    return @{
-      @"id" : selected.deviceId ?: @"",
-      @"label" : selected.name ?: @"",
-      @"kind" : @"systemDefault",
-    };
+
+  // If CoreAudio's default property is unavailable, resolve the default
+  // alias's concrete endpoint by its unique display-name match. This retains a
+  // selectable physical ID instead of returning a duplicate logical alias.
+  RTCIODevice* defaultAlias = nil;
+  RTCIODevice* concreteDefault = nil;
+  NSUInteger concreteMatches = 0;
+  for (RTCIODevice* available in availableOutputs) {
+    if (available.isDefault) {
+      defaultAlias = available;
+      continue;
+    }
   }
-  return nil;
+  if (defaultAlias != nil) {
+    for (RTCIODevice* available in availableOutputs) {
+      if (!available.isDefault &&
+          [available.name isEqualToString:defaultAlias.name]) {
+        concreteDefault = available;
+        concreteMatches++;
+      }
+    }
+  }
+  if (concreteMatches == 1) {
+    return AudioRouteMapForMacRtcDevice(concreteDefault);
+  }
+  return AudioRouteMapForMacRtcDevice(defaultAlias);
 #else
   return nil;
 #endif

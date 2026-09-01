@@ -59,6 +59,12 @@ typedef void (^CapturerStopHandler)(CompletionHandler _Nonnull handler);
 @property(nonatomic, strong) RTCCameraVideoCapturer* _Nullable videoCapturer;
 @property(nonatomic, strong) FlutterRTCFrameCapturer* _Nullable frameCapturer;
 @property(nonatomic, strong) AVAudioSessionPort _Nullable preferredInput;
+#if TARGET_OS_OSX
+/// Last output accepted by the ADM. AudioEngine ADM does not currently
+/// implement `GetPlayoutDevice`, so its Objective-C `outputDevice` getter
+/// cannot be used as authoritative readback.
+@property(nonatomic, copy) NSString* _Nonnull selectedAudioOutputDeviceId;
+#endif
 
 @property(nonatomic, strong) NSString* _Nonnull focusMode;
 @property(nonatomic, strong) NSString* _Nonnull exposureMode;
