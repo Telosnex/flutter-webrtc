@@ -543,36 +543,29 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
     return AudioRouteMapForMacRtcDevice(selected);
   }
 
+  // Default-following mode and its current concrete endpoint are two pieces of
+  // information. Preserve the logical `default` ID while using CoreAudio's
+  // concrete endpoint name for a useful readback label.
   AudioDeviceID defaultId = DefaultOutputAudioDeviceId();
   if (defaultId != kAudioObjectUnknown) {
-    return AudioRouteMapForMacDevice(defaultId, nil, nil);
+    NSDictionary* concrete = AudioRouteMapForMacDevice(defaultId, nil, nil);
+    if (concrete != nil) {
+      return @{
+        @"id" : @"default",
+        @"label" : concrete[@"label"] ?: @"",
+        @"kind" : @"systemDefault",
+      };
+    }
   }
 
-  // If CoreAudio's default property is unavailable, resolve the default
-  // alias's concrete endpoint by its unique display-name match. This retains a
-  // selectable physical ID instead of returning a duplicate logical alias.
-  RTCIODevice* defaultAlias = nil;
-  RTCIODevice* concreteDefault = nil;
-  NSUInteger concreteMatches = 0;
+  // Some sandboxed configurations do not expose CoreAudio's default-device
+  // property even though the ADM still exposes its system-following alias.
   for (RTCIODevice* available in availableOutputs) {
     if (available.isDefault) {
-      defaultAlias = available;
-      continue;
+      return AudioRouteMapForMacRtcDevice(available);
     }
   }
-  if (defaultAlias != nil) {
-    for (RTCIODevice* available in availableOutputs) {
-      if (!available.isDefault &&
-          [available.name isEqualToString:defaultAlias.name]) {
-        concreteDefault = available;
-        concreteMatches++;
-      }
-    }
-  }
-  if (concreteMatches == 1) {
-    return AudioRouteMapForMacRtcDevice(concreteDefault);
-  }
-  return AudioRouteMapForMacRtcDevice(defaultAlias);
+  return nil;
 #else
   return nil;
 #endif
