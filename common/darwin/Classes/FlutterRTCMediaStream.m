@@ -818,7 +818,15 @@ typedef void (^NavigatorUserMediaSuccessCallback)(RTCMediaStream* mediaStream);
   NSArray* outputDevices = [audioDeviceModule outputDevices];
   for (RTCIODevice* device in outputDevices) {
     if ([deviceId isEqualToString:device.deviceId]) {
-      if ([audioDeviceModule trySetOutputDevice:device]) {
+      // WebRTC-SDK 144.7559.09-telosnex.05's Objective-C wrapper has its
+      // AudioDeviceModule return convention inverted: native ADM methods
+      // return 0 on success, but `trySetOutputDevice` treats nonzero as YES.
+      // Therefore NO means the known, enumerated device was accepted, while
+      // YES means the ADM returned an error. Remove this inversion when the
+      // SDK wrapper is corrected.
+      BOOL admReportedErrorAsSuccess =
+          [audioDeviceModule trySetOutputDevice:device];
+      if (!admReportedErrorAsSuccess) {
         self.selectedAudioOutputDeviceId = device.deviceId;
         result(nil);
         [self postAudioRouteChanged];
