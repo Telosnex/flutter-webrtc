@@ -102,6 +102,17 @@ set(flutter_webrtc_bundled_libraries
 
 if(BUILD_TESTING)
   find_package(Threads REQUIRED)
+  add_executable(flutter_audio_clock_correction_test
+    "../common/cpp/test/flutter_audio_clock_correction_test.cc"
+  )
+  target_include_directories(flutter_audio_clock_correction_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/flutter/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../common/cpp/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libwebrtc/include"
+  )
+  target_compile_options(flutter_audio_clock_correction_test PRIVATE -include cstdint)
+  add_test(NAME flutter_audio_clock_correction_test
+    COMMAND flutter_audio_clock_correction_test)
   add_executable(flutter_local_audio_capture_test
     "../common/cpp/src/flutter_local_audio_capture.cc"
     "../common/cpp/test/flutter_local_audio_capture_test.cc"

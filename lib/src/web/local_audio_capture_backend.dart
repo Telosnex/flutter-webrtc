@@ -38,6 +38,10 @@ class LocalAudioCaptureBackend {
     MediaStreamTrack? track,
     String? trackId,
   }) async {
+    if (profile.toMap().containsKey('clockCorrection')) {
+      throw UnsupportedError(
+          'Native clock correction is unavailable in browsers');
+    }
     if (_active != null || _stoppingRun != null) {
       throw StateError('A local audio capture generation is already active');
     }

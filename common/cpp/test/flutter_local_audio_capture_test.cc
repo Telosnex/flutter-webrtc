@@ -1,3 +1,5 @@
+// Assertions are release qualification gates, not debug-only checks.
+#undef NDEBUG
 #include "flutter_local_audio_capture.h"
 
 #include <algorithm>

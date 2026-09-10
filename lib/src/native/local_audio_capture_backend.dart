@@ -29,6 +29,19 @@ class LocalAudioCaptureBackend {
     MediaStreamTrack? track,
     String? trackId,
   }) async {
+    final requestedClock = profile.toMap()['clockCorrection'];
+    if (requestedClock != null) {
+      if (!['off', 'observe', 'control'].contains(requestedClock)) {
+        throw ArgumentError.value(requestedClock, 'clockCorrection');
+      }
+      final state = await getState();
+      final processing = state['processingState'];
+      final clock = processing is Map ? processing['clockCorrection'] : null;
+      if (clock is! Map || clock['supported'] != true) {
+        throw UnsupportedError(
+            'Native clockCorrection API V1/ALSA is unavailable');
+      }
+    }
     final response = await WebRTC.invokeMethod<Map<dynamic, dynamic>, dynamic>(
       'startLocalAudioCapture',
       <String, dynamic>{
@@ -38,6 +51,19 @@ class LocalAudioCaptureBackend {
     );
     if (response == null) {
       throw StateError('startLocalAudioCapture returned no state');
+    }
+    if (requestedClock != null) {
+      final processing = response['processingState'];
+      final clock = processing is Map ? processing['clockCorrection'] : null;
+      if (clock is! Map ||
+          clock['supported'] != true ||
+          clock['mode'] != requestedClock) {
+        // Retire only the generation this call opened; never silently run a
+        // requested policy that the native implementation did not acknowledge.
+        await stop((response['generation'] as num).toInt());
+        throw StateError(
+            'Native capture did not acknowledge clockCorrection=$requestedClock');
+      }
     }
     return LocalAudioCaptureStart(
       generation: (response['generation'] as num).toInt(),

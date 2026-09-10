@@ -1,5 +1,11 @@
 import 'dart:typed_data';
 
+/// Optional native ALSA capture-clock policy. Omission preserves the current
+/// deployment/environment policy; it does not select a new default.
+/// Configure before first capture. Reapplying the same mode is idempotent;
+/// changing mode afterward requires a WebRTC factory/application restart.
+enum LocalAudioClockCorrection { off, observe, control }
+
 /// Requested peerless speech-processing profile.
 class LocalAudioProcessingProfile {
   const LocalAudioProcessingProfile({
@@ -7,6 +13,7 @@ class LocalAudioProcessingProfile {
     this.noiseSuppression = true,
     this.autoGainControl = true,
     this.highPassFilter = true,
+    this.clockCorrection,
   });
 
   final bool echoCancellation;
@@ -14,11 +21,17 @@ class LocalAudioProcessingProfile {
   final bool autoGainControl;
   final bool highPassFilter;
 
+  /// `control` preserves the native bounded hardware servo with callback
+  /// fallback. `observe` measures without resampling. Unsupported backends or
+  /// older native binaries reject explicit requests rather than ignoring them.
+  final LocalAudioClockCorrection? clockCorrection;
+
   Map<String, dynamic> toMap() => {
         'echoCancellation': echoCancellation,
         'noiseSuppression': noiseSuppression,
         'autoGainControl': autoGainControl,
         'highPassFilter': highPassFilter,
+        if (clockCorrection != null) 'clockCorrection': clockCorrection!.name,
       };
 }
 

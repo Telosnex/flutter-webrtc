@@ -1,4 +1,5 @@
 #include "flutter_webrtc.h"
+#include "flutter_audio_clock_correction.h"
 #include "flutter_data_channel.h"
 
 #include "flutter_webrtc/flutter_web_r_t_c_plugin.h"
@@ -1421,6 +1422,12 @@ void FlutterWebRTC::StartLocalAudioCapture(
   profile.high_pass_filter =
       ProfileBoolean(profile_map, "highPassFilter", true);
 
+  const auto clock_error = ConfigureCaptureClockCorrection(audio_processing_.get(), profile_map);
+  if (!clock_error.empty()) {
+    result->Error("clockCorrection", clock_error);
+    return;
+  }
+
   if (audio_processing_->ApplyCaptureProfile(profile) != 0) {
     result->Error("startLocalAudioCapture",
                   "Failed to apply capture processing profile");
@@ -1439,10 +1446,15 @@ void FlutterWebRTC::StartLocalAudioCapture(
 
   EncodableMap response;
   response[EncodableValue("generation")] = EncodableValue(generation);
-  response[EncodableValue("requestedProfile")] =
-      EncodableValue(ProfileMap(profile));
-  response[EncodableValue("processingState")] = EncodableValue(
-      ProcessingStateMap(audio_processing_->GetCaptureProcessingState()));
+  auto requested_profile = ProfileMap(profile);
+  const auto requested_clock = profile_map.find(EncodableValue("clockCorrection"));
+  if (requested_clock != profile_map.end())
+    requested_profile[EncodableValue("clockCorrection")] = requested_clock->second;
+  response[EncodableValue("requestedProfile")] = EncodableValue(requested_profile);
+  auto processing = ProcessingStateMap(audio_processing_->GetCaptureProcessingState());
+  processing[EncodableValue("clockCorrection")] =
+      EncodableValue(ClockCorrectionStateMap(audio_processing_.get()));
+  response[EncodableValue("processingState")] = EncodableValue(processing);
   response[EncodableValue("platformVoiceProcessingAllowed")] =
       EncodableValue(false);
   response[EncodableValue("voiceProcessingBypassed")] = EncodableValue(false);
@@ -1495,8 +1507,10 @@ EncodableMap FlutterWebRTC::LocalAudioCaptureState() {
       EncodableValue(local_audio_capture_->processed_callbacks());
   state[EncodableValue("processedFrames")] =
       EncodableValue(local_audio_capture_->processed_frames());
-  state[EncodableValue("processingState")] = EncodableValue(
-      ProcessingStateMap(audio_processing_->GetCaptureProcessingState()));
+  auto processing = ProcessingStateMap(audio_processing_->GetCaptureProcessingState());
+  processing[EncodableValue("clockCorrection")] =
+      EncodableValue(ClockCorrectionStateMap(audio_processing_.get()));
+  state[EncodableValue("processingState")] = EncodableValue(processing);
   return state;
 }
 
