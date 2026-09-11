@@ -23,6 +23,7 @@ rootProject.allprojects {
 }
 
 apply plugin: 'com.android.library'
+apply from: "${projectDir}/telosnex_libwebrtc.gradle"
 
 // AGP 9's built-in Kotlin compiles Kotlin itself and rejects the Kotlin Gradle
 // Plugin. Apply KGP only when built-in Kotlin is NOT active: that means AGP < 9,
@@ -75,7 +76,7 @@ if (kotlinExt?.hasProperty('compilerOptions')) {
 }
 
 dependencies {
-    implementation 'io.github.webrtc-sdk:android:144.7559.09'
+    implementation telosnexWebRtcAar
     implementation 'com.github.davidliu:audioswitch:039a35aefab7747c557242fa216c9ea11743b604'
     implementation 'androidx.annotation:annotation:1.1.0'
     testImplementation 'junit:junit:4.13.2'

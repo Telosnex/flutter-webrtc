@@ -1,0 +1,103 @@
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+
+// Android consumes the same reviewed Telosnex fork as the other native
+// platforms. A GitHub release tag names the asset; the mandatory SHA-256 makes
+// replacement of that asset fail closed rather than silently changing code.
+def manifestFile = file("${projectDir}/../third_party/libwebrtc_version.ini")
+def nativeManifest = [:]
+manifestFile.eachLine('UTF-8') { line ->
+    def value = line.trim()
+    if (value && !value.startsWith('#') && !value.startsWith('[')) {
+        def separator = value.indexOf('=')
+        if (separator > 0) {
+            nativeManifest[value.substring(0, separator).trim()] =
+                    value.substring(separator + 1).trim()
+        }
+    }
+}
+
+def requireManifestValue = { String key ->
+    def value = nativeManifest[key]
+    if (value == null || value.isEmpty()) {
+        throw new GradleException("${manifestFile} must define ${key}")
+    }
+    value
+}
+
+def releaseBaseUrl = requireManifestValue('download_url')
+def androidVersion = requireManifestValue('android_binary_version')
+def androidAsset = requireManifestValue('android_asset')
+def expectedSha256 = requireManifestValue('android_sha256').toLowerCase(Locale.ROOT)
+if (!(expectedSha256 ==~ /[0-9a-f]{64}/)) {
+    throw new GradleException("${manifestFile}: android_sha256 must be 64 lowercase hex digits")
+}
+if (androidAsset != new File(androidAsset).name) {
+    throw new GradleException("${manifestFile}: android_asset must be a file name")
+}
+
+def cacheRoot = providers.gradleProperty('telosnexWebRtcCacheDir')
+        .map { file(it) }
+        .getOrElse(new File(gradle.gradleUserHomeDir, 'caches/telosnex-libwebrtc'))
+def cachedAar = new File(new File(cacheRoot, androidVersion), androidAsset)
+def downloadUrl = "${releaseBaseUrl}/${androidVersion}/${androidAsset}"
+
+def sha256 = { File input ->
+    def digest = MessageDigest.getInstance('SHA-256')
+    input.withInputStream { stream ->
+        byte[] buffer = new byte[1024 * 1024]
+        for (int count = stream.read(buffer); count != -1; count = stream.read(buffer)) {
+            digest.update(buffer, 0, count)
+        }
+    }
+    digest.digest().collect { String.format('%02x', it) }.join()
+}
+
+def fetchTelosnexWebRtcAar = tasks.register('fetchTelosnexWebRtcAar') {
+    group = 'build setup'
+    description = 'Fetches and SHA-256 verifies the pinned Telosnex WebRTC AAR.'
+    inputs.property('releaseUrl', downloadUrl)
+    inputs.property('expectedSha256', expectedSha256)
+    outputs.file(cachedAar)
+    // Re-hash on every invocation. A valid cached artifact requires no network.
+    outputs.upToDateWhen { false }
+
+    doLast {
+        if (cachedAar.exists()) {
+            def actual = sha256(cachedAar)
+            if (actual != expectedSha256) {
+                throw new GradleException(
+                        "Cached Telosnex WebRTC AAR failed SHA-256: " +
+                        "expected ${expectedSha256}, got ${actual}. Delete ${cachedAar} explicitly.")
+            }
+            return
+        }
+
+        cachedAar.parentFile.mkdirs()
+        def partial = new File(cachedAar.parentFile, "${cachedAar.name}.part-${UUID.randomUUID()}")
+        try {
+            def connection = new URL(downloadUrl).openConnection()
+            connection.connectTimeout = 30_000
+            connection.readTimeout = 120_000
+            connection.setRequestProperty('User-Agent', 'flutter-webrtc-telosnex-artifact-fetcher')
+            connection.inputStream.withCloseable { input ->
+                partial.withOutputStream { output -> input.transferTo(output) }
+            }
+            def actual = sha256(partial)
+            if (actual != expectedSha256) {
+                throw new GradleException(
+                        "Downloaded Telosnex WebRTC AAR failed SHA-256: " +
+                        "expected ${expectedSha256}, got ${actual} from ${downloadUrl}")
+            }
+            Files.move(partial.toPath(), cachedAar.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            partial.delete()
+        }
+    }
+}
+
+ext.telosnexWebRtcAar = files(cachedAar).builtBy(fetchTelosnexWebRtcAar)
+ext.telosnexWebRtcAndroidVersion = androidVersion
+ext.telosnexWebRtcAndroidSha256 = expectedSha256
