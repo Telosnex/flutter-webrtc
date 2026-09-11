@@ -37,17 +37,18 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
-      # The WebRTC-SDK version is pinned in both podspecs and both Package.swift
-      # binary targets. Fail if any of the four drift apart.
-      - name: Check WebRTC-SDK versions match
+      - name: Check exact fork versions and hashes
         run: |
-          versions=$(
-            grep -h "s.dependency 'WebRTC-SDK'" ios/flutter_webrtc.podspec macos/flutter_webrtc.podspec | grep -oE "[0-9]+\.[0-9]+\.[0-9]+"
-            grep -h "webrtc-sdk/Specs/releases/download" ios/flutter_webrtc/Package.swift macos/flutter_webrtc/Package.swift | grep -oE "[0-9]+\.[0-9]+\.[0-9]+"
-          )
-          echo "$versions"
-          test "$(echo "$versions" | wc -l)" -eq 4
-          test "$(echo "$versions" | sort -u | wc -l)" -eq 1
+          python3 tool/verify_native_pins.py
+          python3 -m unittest discover -s tool -p test_native_pins.py
+
+  darwin-capture-controller:
+    name: Apple capture lifecycle controller
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test device-free controller
+        run: tool/test_darwin_capture_controller.sh
 
   build-for-android:
     name: Build for Flutter Android
