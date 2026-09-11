@@ -35,6 +35,19 @@ class LocalAudioProcessingProfile {
       };
 }
 
+/// Capture opened, but policy acknowledgement and its cleanup both failed.
+/// The owner must retain its track/transport and retry stop for [generation].
+/// This is not a successful capture start and must not create another owner.
+class LocalAudioCaptureStartCleanupException extends StateError {
+  LocalAudioCaptureStartCleanupException({
+    required this.generation,
+    required this.cleanupError,
+  }) : super('Native capture policy was not acknowledged and cleanup failed');
+
+  final int generation;
+  final Object cleanupError;
+}
+
 class LocalAudioCaptureStart {
   const LocalAudioCaptureStart({
     required this.generation,

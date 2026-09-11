@@ -12,11 +12,13 @@ void main() {
   final calls = <MethodCall>[];
   var supported = true;
   var reportedMode = 'control';
+  var stopFails = false;
   setUp(() {
     WebRTC.initialized = true;
     calls.clear();
     supported = true;
     reportedMode = 'control';
+    stopFails = false;
     messenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call);
       final state = {
@@ -25,6 +27,8 @@ void main() {
       return switch (call.method) {
         'getLocalAudioCaptureState' => {'processingState': state},
         'startLocalAudioCapture' => {'generation': 7, 'processingState': state},
+        'stopLocalAudioCapture' when stopFails =>
+          throw PlatformException(code: 'stopFailed'),
         'stopLocalAudioCapture' => null,
         _ => throw StateError(call.method),
       };
@@ -65,6 +69,32 @@ void main() {
         ),
         throwsUnsupportedError);
     expect(calls.map((call) => call.method), ['getLocalAudioCaptureState']);
+  });
+  test('failed policy cleanup returns the exact owned generation for retry',
+      () async {
+    reportedMode = 'off';
+    stopFails = true;
+    final backend = LocalAudioCaptureBackend();
+    await expectLater(
+      backend.start(
+          profile: const LocalAudioProcessingProfile(
+        clockCorrection: LocalAudioClockCorrection.control,
+      )),
+      throwsA(isA<LocalAudioCaptureStartCleanupException>()
+          .having((error) => error.generation, 'generation', 7)
+          .having((error) => error.cleanupError, 'cleanupError',
+              isA<PlatformException>())),
+    );
+    stopFails = false;
+    await backend.stop(7);
+    expect(
+        calls
+            .where((call) => call.method == 'stopLocalAudioCapture')
+            .map((call) => call.arguments),
+        [
+          {'generation': 7},
+          {'generation': 7}
+        ]);
   });
   test('unacknowledged policy retires exactly the opened generation', () async {
     reportedMode = 'off';

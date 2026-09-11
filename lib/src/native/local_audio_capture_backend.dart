@@ -60,7 +60,15 @@ class LocalAudioCaptureBackend {
           clock['mode'] != requestedClock) {
         // Retire only the generation this call opened; never silently run a
         // requested policy that the native implementation did not acknowledge.
-        await stop((response['generation'] as num).toInt());
+        final generation = (response['generation'] as num).toInt();
+        try {
+          await stop(generation);
+        } catch (error) {
+          throw LocalAudioCaptureStartCleanupException(
+            generation: generation,
+            cleanupError: error,
+          );
+        }
         throw StateError(
             'Native capture did not acknowledge clockCorrection=$requestedClock');
       }
