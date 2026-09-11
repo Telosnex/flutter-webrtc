@@ -23,12 +23,12 @@ APPLE_METHODS = ('acquireExternalRecordingWithAudioProcessingOptions:',
 APPLE_SLICES = {
     ('ios', ''): ({'arm64'}, 'ios'),
     ('ios', 'simulator'): ({'arm64', 'x86_64'}, 'iossimulator'),
-    ('ios', 'maccatalyst'): ({'arm64', 'x86_64'}, 'maccatalyst'),
+    ('ios', 'maccatalyst'): ({'arm64', 'x86_64'}, 'macCatalyst'),
     ('macos', ''): ({'arm64', 'x86_64'}, 'macos'),
     ('tvos', ''): ({'arm64'}, 'tvos'),
     ('tvos', 'simulator'): ({'arm64'}, 'tvossimulator'),
     ('xros', ''): ({'arm64'}, 'xros'),
-    ('xros', 'simulator'): ({'arm64'}, 'xrossimulator'),
+    ('xros', 'simulator'): ({'arm64'}, 'xrsimulator'),
 }
 
 

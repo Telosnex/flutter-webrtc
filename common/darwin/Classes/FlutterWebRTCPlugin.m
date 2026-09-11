@@ -34,6 +34,7 @@
 
 #import "LocalTrack.h"
 #import "LocalAudioCaptureProcessor.h"
+#import "LocalAudioCaptureController.h"
 #import "LocalAudioTrack.h"
 #import "LocalVideoTrack.h"
 
@@ -221,6 +222,8 @@ static NSDictionary* AudioRouteMapForMacRtcDevice(RTCIODevice* device) {
   LocalAudioCaptureProcessor* _localAudioCaptureProcessor;
   dispatch_queue_t _localAudioCaptureQueue;
   BOOL _localAudioCaptureStopPending;
+  BOOL _localAudioCaptureDetached;
+  LocalAudioCaptureController* _localAudioCaptureController;
 #if TARGET_OS_IPHONE || TARGET_OS_OSX
   FlutterRTCVideoPlatformViewFactory *_platformViewFactory;
 #endif
@@ -463,6 +466,16 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 }
 
 - (void)detachFromEngineForRegistrar:(NSObject<FlutterPluginRegistrar>*)registrar {
+  _localAudioCaptureDetached = YES;
+  [_localAudioCaptureController close];
+  [_localAudioCaptureProcessor deactivateGeneration:_localAudioCaptureProcessor.activeGeneration];
+  LocalAudioCaptureController* controller = _localAudioCaptureController;
+  dispatch_async(_localAudioCaptureQueue, ^{
+    NSInteger releaseResult = [controller releaseRecording];
+    if (releaseResult != 0) {
+      NSLog(@"Local audio detach release failed: %ld", (long)releaseResult);
+    }
+  });
 #if TARGET_OS_OSX
   [self unregisterDefaultOutputDeviceListener];
 #endif
@@ -2045,6 +2058,12 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 #endif
     } else if ([@"startLocalAudioCapture" isEqualToString:call.method]) {
       RTCAudioDeviceModule* adm = _peerConnectionFactory.audioDeviceModule;
+      if (_localAudioCaptureDetached) {
+        result([FlutterError errorWithCode:@"startLocalAudioCapture detached"
+                                   message:@"The plugin is detached"
+                                   details:nil]);
+        return;
+      }
       if (adm == nil) {
         result([FlutterError errorWithCode:@"startLocalAudioCapture failed"
                                    message:@"Audio device module is unavailable"
@@ -2071,17 +2090,24 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
                   noiseSuppression:noiseSuppression
                    autoGainControl:autoGainControl
                     highPassFilter:highPassFilter];
+      if (_localAudioCaptureController == nil) {
+        // The blocks retain the factory, so its worker outlives queued cleanup.
+        RTCPeerConnectionFactory* factory = _peerConnectionFactory;
+        _localAudioCaptureController = [[LocalAudioCaptureController alloc]
+            initWithAcquire:^NSInteger(id requestedOptions) {
+              return [factory.audioDeviceModule
+                  acquireExternalRecordingWithAudioProcessingOptions:requestedOptions];
+            }
+            release:^NSInteger {
+              return [factory.audioDeviceModule releaseExternalRecording];
+            }];
+      }
+      LocalAudioCaptureController* controller = _localAudioCaptureController;
       NSUInteger generation = [_localAudioCaptureProcessor activate];
       dispatch_async(_localAudioCaptureQueue, ^{
-        NSInteger demandResult = [adm setExternalRecordingDemand:YES];
-        NSInteger admResult = demandResult == 0
-            ? [adm initAndStartRecordingWithAudioProcessingOptions:options]
-            : demandResult;
-        if (admResult != 0) {
-          [adm setExternalRecordingDemand:NO];
-        }
+        NSInteger admResult = [controller acquireWithOptions:options];
         dispatch_async(dispatch_get_main_queue(), ^{
-          if (admResult == 0) {
+          if (admResult == 0 && !controller.isClosed) {
             result(@{
               @"generation" : @(generation),
               @"requestedProfile" : @{
@@ -2094,7 +2120,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
               @"platformVoiceProcessingAllowed" :
                   @(adm.isPlatformVoiceProcessingAllowed),
               @"voiceProcessingBypassed" : @(adm.isVoiceProcessingBypassed),
-              @"externalDemandResult" : @(demandResult)
+              @"externalDemandResult" : @(admResult)
             });
           } else {
             [self->_localAudioCaptureProcessor deactivateGeneration:generation];
@@ -2123,24 +2149,19 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
         return;
       }
       _localAudioCaptureStopPending = YES;
+      LocalAudioCaptureController* controller = _localAudioCaptureController;
       dispatch_async(_localAudioCaptureQueue, ^{
-        NSInteger demandResult = [adm setExternalRecordingDemand:NO];
-        NSInteger admResult = demandResult == 0 ? [adm stopRecording] : demandResult;
-        if (demandResult == 0 && admResult != 0) {
-          // Stop failed, so preserve ownership of the still-active generation.
-          [adm setExternalRecordingDemand:YES];
-        }
+        NSInteger admResult = [controller releaseRecording];
         dispatch_async(dispatch_get_main_queue(), ^{
           self->_localAudioCaptureStopPending = NO;
-          if (demandResult == 0 && admResult == 0) {
+          if (admResult == 0) {
             [self->_localAudioCaptureProcessor deactivateGeneration:generation];
             result(nil);
           } else {
             result([FlutterError
                 errorWithCode:@"stopLocalAudioCapture failed"
                       message:[NSString stringWithFormat:
-                          @"ADM stop failed: demand=%ld stop=%ld",
-                          (long)demandResult, (long)admResult]
+                          @"ADM release failed with code: %ld", (long)admResult]
                       details:[self localAudioCaptureStateMap:adm]]);
           }
         });
@@ -2266,6 +2287,16 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 }
 
 - (void)dealloc {
+  LocalAudioCaptureController* controller = _localAudioCaptureController;
+  [controller close];
+  if (_localAudioCaptureQueue != nil) {
+    dispatch_async(_localAudioCaptureQueue, ^{
+      NSInteger releaseResult = [controller releaseRecording];
+      if (releaseResult != 0) {
+        NSLog(@"Local audio disposal release failed: %ld", (long)releaseResult);
+      }
+    });
+  }
 #if TARGET_OS_OSX
   [self unregisterDefaultOutputDeviceListener];
 #endif
@@ -2273,9 +2304,6 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
     if (_localAudioCaptureProcessor.isActive) {
       [_localAudioCaptureProcessor
           deactivateGeneration:_localAudioCaptureProcessor.activeGeneration];
-      RTCAudioDeviceModule* adm = _peerConnectionFactory.audioDeviceModule;
-      [adm setExternalRecordingDemand:NO];
-      [adm stopRecording];
     }
     [_audioManager.capturePostProcessingAdapter
         removeProcessing:_localAudioCaptureProcessor];

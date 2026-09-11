@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "flutter_webrtc",
     platforms: [
-        .macOS("10.15")
+        .macOS("11.0")
     ],
     products: [
         .library(name: "flutter-webrtc", targets: ["flutter_webrtc"]),
@@ -18,8 +18,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "WebRTC",
-            url: "https://github.com/Telosnex/libwebrtc/releases/download/libwebrtc.m144.7559.09-telosnex.05/WebRTC.xcframework.zip",
-            checksum: "dcacf11d424c8aa7bfc3ecd4754157ae957890f92ea4f542e6ebf3369ee1293c"
+            url: "https://github.com/Telosnex/libwebrtc/releases/download/libwebrtc.m144.7559.09-telosnex.08/WebRTC.xcframework.zip",
+            checksum: "d74f2769f723792bdd3c50520be087cb233df4f84df34ee44bc6ee813ea3a8b7"
         ),
         .target(
             name: "flutter_webrtc",

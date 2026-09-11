@@ -16,8 +16,8 @@ A new flutter plugin project.
   s.public_header_files = 'flutter_webrtc/Sources/flutter_webrtc/include/flutter_webrtc/**/*.h'
   s.dependency 'Flutter'
   # Telosnex app Podfiles resolve this from an immutable :podspec URL.
-  s.dependency 'WebRTC-SDK', '144.7559.09-telosnex.05'
-  s.ios.deployment_target = '13.0'
+  s.dependency 'WebRTC-SDK', '144.7559.09-telosnex.08'
+  s.ios.deployment_target = '14.0'
   s.static_framework = true
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++14',

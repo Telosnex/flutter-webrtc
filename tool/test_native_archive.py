@@ -4,10 +4,14 @@ import struct
 import unittest
 from zipfile import ZipFile, ZipInfo
 
-from verify_native_archive import archive_read, binary_arch, require, unique_member
+from verify_native_archive import APPLE_SLICES, archive_read, binary_arch, require, unique_member
 
 
 class NativeArchiveTest(unittest.TestCase):
+    def test_llvm_apple_platform_spellings(self):
+        self.assertEqual('macCatalyst', APPLE_SLICES[('ios', 'maccatalyst')][1])
+        self.assertEqual('xrsimulator', APPLE_SLICES[('xros', 'simulator')][1])
+
     def test_elf_architecture(self):
         data = bytearray(64)
         data[:6] = b'\x7fELF\x02\x01'
