@@ -40,7 +40,7 @@ jobs:
       - name: Check exact fork versions and hashes
         run: |
           python3 tool/verify_native_pins.py
-          python3 -m unittest discover -s tool -p test_native_pins.py
+          python3 -m unittest discover -s tool -p 'test_native_*.py'
 
   darwin-capture-controller:
     name: Apple capture lifecycle controller
