@@ -34,8 +34,7 @@ if (await LocalPcmPlayout.isSupported()) {
   Browser support for non-default outputs depends on `setSinkId`; existing RTC
   renderer output selection remains renderer-local.
 
-The published .08 native pins are unchanged until complete native artifacts
-are qualified. For local testing, C++ accepts a matching complete archive via
+Native pins now use the same-run published .09 artifacts across Apple, Android, Linux, and Windows. For local testing, C++ accepts a matching complete archive via
 `TELOSNEX_LIBWEBRTC_ARCHIVE` plus `TELOSNEX_LIBWEBRTC_SHA256`; Android accepts
 `TELOSNEX_WEBRTC_AAR` plus `TELOSNEX_WEBRTC_AAR_SHA256`. Both verify content hashes.
 Do not replace one library under an old artifact identity.
