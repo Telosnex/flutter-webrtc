@@ -2,110 +2,81 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
-// Android consumes the same reviewed Telosnex fork as the other native
-// platforms. A GitHub release tag names the asset; the mandatory SHA-256 makes
-// replacement of that asset fail closed rather than silently changing code.
+// Android consumes the reviewed Telosnex fork as a checksum-verified external
+// Maven module. A direct local .aar dependency breaks application builds when
+// AGP bundles this plugin AAR, so the verified bytes live in a private Gradle
+// cache repository with generated immutable metadata.
 def manifestFile = file("${projectDir}/../third_party/libwebrtc_version.ini")
 def nativeManifest = [:]
 manifestFile.eachLine('UTF-8') { line ->
     def value = line.trim()
     if (value && !value.startsWith('#') && !value.startsWith('[')) {
         def separator = value.indexOf('=')
-        if (separator > 0) {
-            nativeManifest[value.substring(0, separator).trim()] =
-                    value.substring(separator + 1).trim()
-        }
+        if (separator > 0) nativeManifest[value.substring(0, separator).trim()] = value.substring(separator + 1).trim()
     }
 }
-
 def requireManifestValue = { String key ->
     def value = nativeManifest[key]
-    if (value == null || value.isEmpty()) {
-        throw new GradleException("${manifestFile} must define ${key}")
-    }
+    if (value == null || value.isEmpty()) throw new GradleException("${manifestFile} must define ${key}")
     value
 }
-
 def releaseBaseUrl = requireManifestValue('download_url')
 def androidVersion = requireManifestValue('android_binary_version')
 def androidAsset = requireManifestValue('android_asset')
 def expectedSha256 = requireManifestValue('android_sha256').toLowerCase(Locale.ROOT)
-if (!(expectedSha256 ==~ /[0-9a-f]{64}/)) {
-    throw new GradleException("${manifestFile}: android_sha256 must be 64 lowercase hex digits")
-}
-if (androidAsset != new File(androidAsset).name) {
-    throw new GradleException("${manifestFile}: android_asset must be a file name")
-}
+if (!(expectedSha256 ==~ /[0-9a-f]{64}/)) throw new GradleException("${manifestFile}: android_sha256 must be 64 lowercase hex digits")
+if (androidAsset != new File(androidAsset).name) throw new GradleException("${manifestFile}: android_asset must be a file name")
 
-def cacheRoot = providers.gradleProperty('telosnexWebRtcCacheDir')
-        .map { file(it) }
+def cacheRoot = providers.gradleProperty('telosnexWebRtcCacheDir').map { file(it) }
         .getOrElse(new File(gradle.gradleUserHomeDir, 'caches/telosnex-libwebrtc'))
-def cachedAar = new File(new File(cacheRoot, androidVersion), androidAsset)
+def moduleRoot = new File(cacheRoot, "m2/org/telosnex/libwebrtc/${androidVersion}")
+def cachedAar = new File(moduleRoot, "libwebrtc-${androidVersion}.aar")
+def cachedPom = new File(moduleRoot, "libwebrtc-${androidVersion}.pom")
 def localAar = System.getenv('TELOSNEX_WEBRTC_AAR')
 if (localAar) {
     def localHash = System.getenv('TELOSNEX_WEBRTC_AAR_SHA256')
     if (!(localHash ==~ /[0-9a-f]{64}/)) throw new GradleException('Local AAR requires TELOSNEX_WEBRTC_AAR_SHA256')
-    cachedAar = file(localAar)
     expectedSha256 = localHash
 }
 def downloadUrl = "${releaseBaseUrl}/${androidVersion}/${androidAsset}"
-
 def sha256 = { File input ->
     def digest = MessageDigest.getInstance('SHA-256')
     input.withInputStream { stream ->
         byte[] buffer = new byte[1024 * 1024]
-        for (int count = stream.read(buffer); count != -1; count = stream.read(buffer)) {
-            digest.update(buffer, 0, count)
-        }
+        for (int count = stream.read(buffer); count != -1; count = stream.read(buffer)) digest.update(buffer, 0, count)
     }
     digest.digest().collect { String.format('%02x', it) }.join()
 }
-
-def fetchTelosnexWebRtcAar = tasks.register('fetchTelosnexWebRtcAar') {
-    group = 'build setup'
-    description = 'Fetches and SHA-256 verifies the pinned Telosnex WebRTC AAR.'
-    inputs.property('releaseUrl', downloadUrl)
-    inputs.property('expectedSha256', expectedSha256)
-    outputs.file(cachedAar)
-    // Re-hash on every invocation. A valid cached artifact requires no network.
-    outputs.upToDateWhen { false }
-
-    doLast {
-        if (cachedAar.exists()) {
-            def actual = sha256(cachedAar)
-            if (actual != expectedSha256) {
-                throw new GradleException(
-                        "Cached Telosnex WebRTC AAR failed SHA-256: " +
-                        "expected ${expectedSha256}, got ${actual}. Delete ${cachedAar} explicitly.")
-            }
-            return
-        }
-
-        if (localAar) throw new GradleException("Missing local AAR ${cachedAar}")
-        cachedAar.parentFile.mkdirs()
-        def partial = new File(cachedAar.parentFile, "${cachedAar.name}.part-${UUID.randomUUID()}")
-        try {
-            def connection = new URL(downloadUrl).openConnection()
-            connection.connectTimeout = 30_000
-            connection.readTimeout = 120_000
-            connection.setRequestProperty('User-Agent', 'flutter-webrtc-telosnex-artifact-fetcher')
-            connection.inputStream.withCloseable { input ->
-                partial.withOutputStream { output -> input.transferTo(output) }
-            }
-            def actual = sha256(partial)
-            if (actual != expectedSha256) {
-                throw new GradleException(
-                        "Downloaded Telosnex WebRTC AAR failed SHA-256: " +
-                        "expected ${expectedSha256}, got ${actual} from ${downloadUrl}")
-            }
-            Files.move(partial.toPath(), cachedAar.toPath(),
-                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } finally {
-            partial.delete()
-        }
-    }
+def sourceAar = localAar ? file(localAar) : cachedAar
+if (sourceAar.exists()) {
+    def actual = sha256(sourceAar)
+    if (actual != expectedSha256) throw new GradleException("Telosnex WebRTC AAR failed SHA-256: expected ${expectedSha256}, got ${actual}. Delete ${sourceAar} explicitly.")
+} else {
+    if (localAar) throw new GradleException("Missing local AAR ${sourceAar}")
+    moduleRoot.mkdirs()
+    def partial = new File(moduleRoot, "${cachedAar.name}.part-${UUID.randomUUID()}")
+    try {
+        def connection = new URL(downloadUrl).openConnection()
+        connection.connectTimeout = 30_000
+        connection.readTimeout = 120_000
+        connection.setRequestProperty('User-Agent', 'flutter-webrtc-telosnex-artifact-fetcher')
+        connection.inputStream.withCloseable { input -> partial.withOutputStream { output -> input.transferTo(output) } }
+        def actual = sha256(partial)
+        if (actual != expectedSha256) throw new GradleException("Downloaded Telosnex WebRTC AAR failed SHA-256: expected ${expectedSha256}, got ${actual} from ${downloadUrl}")
+        Files.move(partial.toPath(), cachedAar.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    } finally { partial.delete() }
 }
-
-ext.telosnexWebRtcAar = files(cachedAar).builtBy(fetchTelosnexWebRtcAar)
+// Explicit local override is copied into the versioned module; never expose an
+// arbitrary source path as a direct AAR dependency.
+if (localAar && (!cachedAar.exists() || sha256(cachedAar) != expectedSha256)) {
+    moduleRoot.mkdirs()
+    Files.copy(sourceAar.toPath(), cachedAar.toPath(), StandardCopyOption.REPLACE_EXISTING)
+}
+def pom = """<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>org.telosnex</groupId><artifactId>libwebrtc</artifactId><version>${androidVersion}</version><packaging>aar</packaging></project>"""
+if (!cachedPom.exists() || cachedPom.getText('UTF-8') != pom) cachedPom.setText(pom, 'UTF-8')
+rootProject.allprojects {
+    repositories { maven { url = uri(new File(cacheRoot, 'm2')); metadataSources { mavenPom(); artifact() } } }
+}
+ext.telosnexWebRtcDependency = "org.telosnex:libwebrtc:${androidVersion}"
 ext.telosnexWebRtcAndroidVersion = androidVersion
 ext.telosnexWebRtcAndroidSha256 = expectedSha256

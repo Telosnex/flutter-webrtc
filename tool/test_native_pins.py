@@ -41,7 +41,7 @@ class NativePinTest(unittest.TestCase):
             verify(self.root)
 
     def test_upstream_android_dependency_is_rejected(self):
-        self.change("android/build.gradle", "implementation telosnexWebRtcAar",
+        self.change("android/build.gradle", "implementation telosnexWebRtcDependency",
                     "implementation 'io.github.webrtc-sdk:android:144.7559.09'")
         with self.assertRaises(ValueError):
             verify(self.root)

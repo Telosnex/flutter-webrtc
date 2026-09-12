@@ -40,7 +40,7 @@ def verify(root):
     if pins.get("android_asset") != "libwebrtc-android-release.aar":
         raise ValueError("unexpected Android asset name")
     android = (root / "android/build.gradle").read_text()
-    if "io.github.webrtc-sdk:android" in android or "implementation telosnexWebRtcAar" not in android:
+    if "io.github.webrtc-sdk:android" in android or "implementation telosnexWebRtcDependency" not in android:
         raise ValueError("Android must consume the checksum-verified fork AAR")
     print(f"pin consistency passed: Apple={apple[0][0]}, desktop={pins['binary_version']}, Android={pins['android_binary_version']}")
 
