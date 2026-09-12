@@ -126,6 +126,10 @@ class Helper {
   /// speaker and the preferred device
   /// web: flutter web can use RTCVideoRenderer.audioOutput instead
   static Future<void> selectAudioOutput(String deviceId) async {
+    if (kIsWeb) {
+      await LocalPcmPlayout.selectAudioOutput(deviceId);
+      return;
+    }
     await navigator.mediaDevices
         .selectAudioOutput(AudioOutputOptions(deviceId: deviceId));
   }

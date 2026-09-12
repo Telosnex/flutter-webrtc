@@ -27,6 +27,7 @@ dev_dependencies:
 flutter:
   assets:
     - assets/local_audio_capture_processor.js
+    - assets/local_pcm_playout_processor.js
   plugin:
     platforms:
       android:

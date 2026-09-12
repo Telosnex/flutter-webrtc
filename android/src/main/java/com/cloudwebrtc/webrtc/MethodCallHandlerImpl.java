@@ -28,6 +28,9 @@ import com.cloudwebrtc.webrtc.audio.AudioProcessingController;
 import com.cloudwebrtc.webrtc.audio.AudioSwitchManager;
 import com.cloudwebrtc.webrtc.audio.AudioUtils;
 import com.cloudwebrtc.webrtc.audio.LocalAudioCaptureController;
+import com.cloudwebrtc.webrtc.audio.LocalPcmPlayoutController;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import com.cloudwebrtc.webrtc.audio.LocalAudioCaptureProcessor;
 import com.cloudwebrtc.webrtc.audio.LocalAudioTrack;
 import com.cloudwebrtc.webrtc.audio.PlaybackSamplesReadyCallbackAdapter;
@@ -181,7 +184,50 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
     Log.d(TAG, errorMsg);
   }
 
+  private LocalPcmPlayoutController pcmPlayout;
+  private final ExecutorService pcmQueue = Executors.newSingleThreadExecutor();
+  private boolean pcmDisposed;
+
+  private void handlePcmPlayout(MethodCall call, Result result) {
+    if (pcmDisposed || mFactory == null) {
+      result.error("pcmPlayoutUnavailable", "Factory unavailable", null); return;
+    }
+    if (pcmPlayout == null) {
+      try { pcmPlayout = new LocalPcmPlayoutController(mFactory); }
+      catch (NoSuchMethodException unavailable) { /* Old AAR: explicit capability absence. */ }
+    }
+    if (call.method.equals("pcmPlayoutCapabilities")) {
+      Map<String, Object> caps = new HashMap<>();
+      caps.put("version", pcmPlayout == null ? 0 : 1);
+      caps.put("sampleRate", 24000); caps.put("channels", 1); caps.put("requiresAnchor", false);
+      result.success(caps); return;
+    }
+    if (pcmPlayout == null) { result.notImplemented(); return; }
+    LocalPcmPlayoutController controller = pcmPlayout;
+    pcmQueue.execute(() -> {
+      try {
+        Map<String, Object> state = controller.perform(call.method, call.arguments instanceof Map ? (Map<?, ?>)call.arguments : null);
+        new Handler(Looper.getMainLooper()).post(() -> {
+          if (!pcmDisposed && call.method.equals("pcmPlayoutStart")) AudioSwitchManager.instance.start();
+          if (call.method.equals("pcmPlayoutStop")) stopAudioSwitchIfIdle();
+          result.success(state);
+        });
+      }
+      catch (Exception error) { result.error("pcmPlayoutFailed", error.getMessage(), null); }
+    });
+  }
+
   void dispose() {
+    pcmDisposed = true;
+    if (pcmPlayout != null) {
+      LocalPcmPlayoutController controller = pcmPlayout;
+      controller.close();
+      pcmQueue.execute(() -> {
+        try { controller.release(); }
+        catch (Exception error) { Log.w(TAG, "PCM release failed", error); }
+      });
+    }
+    pcmQueue.shutdown();
     if (localAudioCaptureProcessor != null) {
       int generation = localAudioCaptureProcessor.getActiveGeneration();
       if (generation != 0 && localAudioCaptureController != null) {
@@ -421,6 +467,7 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
   public void onMethodCall(MethodCall call, @NonNull Result notSafeResult) {
 
     final AnyThreadResult result = new AnyThreadResult(notSafeResult);
+    if (call.method.startsWith("pcmPlayout")) { handlePcmPlayout(call, result); return; }
     switch (call.method) {
       case "initialize": {
         int networkIgnoreMask = Options.ADAPTER_TYPE_UNKNOWN;
@@ -2405,9 +2452,16 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
     } else {
       Log.d(TAG, "peerConnectionDispose() peerConnectionObserver is null");
     }
-    if (mPeerConnectionObservers.size() == 0) {
-      AudioSwitchManager.instance.stop();
+    stopAudioSwitchIfIdle();
+  }
+
+  private void stopAudioSwitchIfIdle() {
+    if (!mPeerConnectionObservers.isEmpty() || (pcmPlayout != null && pcmPlayout.hasOwner()) ||
+        (localAudioCaptureController != null && localAudioCaptureController.isAcquired())) return;
+    synchronized (localTracks) {
+      for (LocalTrack track : localTracks.values()) if (track instanceof LocalAudioTrack) return;
     }
+    AudioSwitchManager.instance.stop();
   }
 
   public boolean peerConnectionDispose(final PeerConnectionObserver pco) {

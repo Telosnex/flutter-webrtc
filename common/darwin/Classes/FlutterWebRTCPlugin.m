@@ -35,6 +35,7 @@
 #import "LocalTrack.h"
 #import "LocalAudioCaptureProcessor.h"
 #import "LocalAudioCaptureController.h"
+#import "LocalPcmPlayoutController.h"
 #import "LocalAudioTrack.h"
 #import "LocalVideoTrack.h"
 
@@ -224,6 +225,7 @@ static NSDictionary* AudioRouteMapForMacRtcDevice(RTCIODevice* device) {
   BOOL _localAudioCaptureStopPending;
   BOOL _localAudioCaptureDetached;
   LocalAudioCaptureController* _localAudioCaptureController;
+  LocalPcmPlayoutController* _pcmPlayoutController;
 #if TARGET_OS_IPHONE || TARGET_OS_OSX
   FlutterRTCVideoPlatformViewFactory *_platformViewFactory;
 #endif
@@ -466,6 +468,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 }
 
 - (void)detachFromEngineForRegistrar:(NSObject<FlutterPluginRegistrar>*)registrar {
+  [_pcmPlayoutController shutdown];
   _localAudioCaptureDetached = YES;
   [_localAudioCaptureController close];
   [_localAudioCaptureProcessor deactivateGeneration:_localAudioCaptureProcessor.activeGeneration];
@@ -765,6 +768,31 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 }
 
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
+  if ([call.method hasPrefix:@"pcmPlayout"]) {
+    if ([call.method isEqualToString:@"pcmPlayoutCapabilities"]) {
+      result(@{ @"version": @([LocalPcmPlayoutController isSupported] ? 1 : 0),
+        @"sampleRate": @24000, @"channels": @1, @"requiresAnchor": @NO });
+      return;
+    }
+    if (![LocalPcmPlayoutController isSupported]) { result(FlutterMethodNotImplemented); return; }
+    if (_localAudioCaptureDetached || !self.peerConnectionFactory) {
+      result([FlutterError errorWithCode:@"pcmPlayoutUnavailable" message:@"Factory unavailable" details:nil]); return;
+    }
+    if (!_pcmPlayoutController) _pcmPlayoutController = [[LocalPcmPlayoutController alloc] initWithFactory:self.peerConnectionFactory];
+    if ([call.method isEqualToString:@"pcmPlayoutStart"]) [self ensureAudioSession];
+    id arguments = call.arguments;
+    if ([arguments isKindOfClass:[NSDictionary class]] && [arguments[@"pcm"] isKindOfClass:[FlutterStandardTypedData class]]) {
+      NSMutableDictionary *copy = [arguments mutableCopy];
+      copy[@"pcm"] = [(FlutterStandardTypedData *)arguments[@"pcm"] data];
+      arguments = copy;
+    }
+    [_pcmPlayoutController perform:call.method arguments:arguments completion:^(NSDictionary *state, NSString *error) {
+      if (error) result([FlutterError errorWithCode:@"pcmPlayoutFailed" message:error details:state]);
+      else result(state);
+    }];
+    return;
+  }
+
   if ([@"initialize" isEqualToString:call.method]) {
     NSDictionary* argsMap = call.arguments;
     NSDictionary* options = argsMap[@"options"];
@@ -2287,6 +2315,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 }
 
 - (void)dealloc {
+  [_pcmPlayoutController shutdown];
   LocalAudioCaptureController* controller = _localAudioCaptureController;
   [controller close];
   if (_localAudioCaptureQueue != nil) {
@@ -2346,7 +2375,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
   if (!self.audioSessionManagementEnabled) {
     return;
   }
-  if (![self hasLocalAudioTrack] && self.peerConnections.count == 0) {
+  if (![self hasLocalAudioTrack] && !self->_pcmPlayoutController.active && self.peerConnections.count == 0) {
     [AudioUtils deactiveRtcAudioSession];
   }
 #endif

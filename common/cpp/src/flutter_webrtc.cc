@@ -90,6 +90,9 @@ FlutterWebRTC::FlutterWebRTC(FlutterWebRTCPlugin* plugin)
 }
 
 FlutterWebRTC::~FlutterWebRTC() {
+#ifdef LIBWEBRTC_PCM_PLAYOUT_V1
+  if (pcm_playout_generation_) audio_device_->StopPcmPlayout(pcm_playout_generation_);
+#endif
   if (!local_audio_capture_) {
     return;
   }
@@ -104,6 +107,10 @@ FlutterWebRTC::~FlutterWebRTC() {
 void FlutterWebRTC::HandleMethodCall(
     const MethodCallProxy& method_call,
     std::unique_ptr<MethodResultProxy> result) {
+  if (method_call.method_name().rfind("pcmPlayout", 0) == 0) {
+    HandlePcmPlayout(method_call, std::move(result));
+    return;
+  }
   if (method_call.method_name().compare("initialize") == 0) {
     const EncodableMap params =
         GetValue<EncodableMap>(*method_call.arguments());
@@ -1396,6 +1403,88 @@ void FlutterWebRTC::HandleMethodCall(
       result->NotImplemented();
     }
   }
+}
+
+
+void FlutterWebRTC::HandlePcmPlayout(const MethodCallProxy& call, std::unique_ptr<MethodResultProxy> result) {
+  const auto& method = call.method_name();
+  if (method == "pcmPlayoutCapabilities") {
+    EncodableMap value;
+#ifdef LIBWEBRTC_PCM_PLAYOUT_V1
+    value[EncodableValue("version")] = EncodableValue(1);
+    value[EncodableValue("sampleRate")] = EncodableValue(24000);
+    value[EncodableValue("channels")] = EncodableValue(1);
+    value[EncodableValue("maxChunkBytes")] = EncodableValue(48000);
+    value[EncodableValue("maxQueuedFrames")] = EncodableValue(120000);
+#else
+    value[EncodableValue("version")] = EncodableValue(0);
+#endif
+    result->Success(EncodableValue(value));
+    return;
+  }
+#ifndef LIBWEBRTC_PCM_PLAYOUT_V1
+  result->NotImplemented();
+#else
+  auto snapshot = [this] {
+    const auto state = audio_device_->GetPcmPlayoutState();
+    EncodableMap value;
+    value[EncodableValue("generation")] = EncodableValue(state.generation);
+    value[EncodableValue("epoch")] = EncodableValue(state.epoch);
+    value[EncodableValue("queuedFrames")] = EncodableValue(state.queued_frames);
+    value[EncodableValue("acceptedFrames")] = EncodableValue(state.accepted_frames);
+    value[EncodableValue("consumedFrames")] = EncodableValue(state.consumed_frames);
+    value[EncodableValue("discardedFrames")] = EncodableValue(state.discarded_frames);
+    value[EncodableValue("renderCallbacks")] = EncodableValue(state.render_callbacks);
+    value[EncodableValue("underrunCallbacks")] = EncodableValue(state.underrun_callbacks);
+    value[EncodableValue("playing")] = EncodableValue(state.playing);
+    value[EncodableValue("delayMs")] = EncodableValue(state.delay_ms);
+    return value;
+  };
+  if (method == "pcmPlayoutStart") {
+    if (pcm_playout_generation_) {result->Error("pcmPlayoutBusy","An output owner already exists");return;}
+    const int64_t generation = audio_device_->StartPcmPlayout();
+    if (generation <= 0) {result->Error("pcmPlayoutStart","Could not start shared ADM playout");return;}
+    pcm_playout_generation_ = generation;
+    result->Success(EncodableValue(snapshot()));
+    return;
+  }
+  if (!call.arguments() || !TypeIs<EncodableMap>(*call.arguments())) {
+    result->Error("pcmPlayoutArguments","Expected a map");return;
+  }
+  const auto& params = GetValue<EncodableMap>(*call.arguments());
+  auto integer = [&params](const char* key) -> int64_t {
+    auto i=params.find(EncodableValue(key));
+    if(i==params.end())return -1;
+    if(TypeIs<int32_t>(i->second))return GetValue<int32_t>(i->second);
+    if(TypeIs<int64_t>(i->second))return GetValue<int64_t>(i->second);
+    return -1;
+  };
+  const int64_t generation=integer("generation");
+  if (generation <= 0 || generation != pcm_playout_generation_) {
+    result->Error("pcmPlayoutStale","Output generation is no longer active");return;
+  }
+  int code=0;
+  if (method == "pcmPlayoutWrite") {
+    const auto bytes=params.find(EncodableValue("pcm"));
+    if(bytes==params.end() || !TypeIs<std::vector<uint8_t>>(bytes->second)) {
+      result->Error("pcmPlayoutArguments","Expected PCM16LE bytes");return;
+    }
+    const auto& pcm=GetValue<std::vector<uint8_t>>(bytes->second);
+    code=audio_device_->WritePcmPlayout(generation,integer("epoch"),pcm.data(),pcm.size());
+  } else if (method == "pcmPlayoutClear") {
+    code=audio_device_->ClearPcmPlayout(generation,integer("epoch"));
+  } else if (method == "pcmPlayoutStop") {
+    code=audio_device_->StopPcmPlayout(generation);
+    if (code==0) pcm_playout_generation_=0;
+  } else if (method != "pcmPlayoutState") {
+    result->NotImplemented();return;
+  }
+  if (code != 0) {
+    result->Error("pcmPlayoutFailed","PCM operation rejected ("+std::to_string(code)+")",EncodableValue(snapshot()));
+    return;
+  }
+  result->Success(EncodableValue(snapshot()));
+#endif
 }
 
 void FlutterWebRTC::StartLocalAudioCapture(

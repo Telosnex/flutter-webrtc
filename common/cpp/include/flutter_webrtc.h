@@ -50,6 +50,8 @@ class FlutterWebRTC : public FlutterWebRTCBase,
                         std::unique_ptr<MethodResultProxy> result);
 
  private:
+  void HandlePcmPlayout(const MethodCallProxy& call, std::unique_ptr<MethodResultProxy> result);
+  int64_t pcm_playout_generation_ = 0;
   void StartLocalAudioCapture(const EncodableMap& params,
                               std::unique_ptr<MethodResultProxy> result);
   void StopLocalAudioCapture(const EncodableMap& params,

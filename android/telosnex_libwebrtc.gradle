@@ -41,6 +41,13 @@ def cacheRoot = providers.gradleProperty('telosnexWebRtcCacheDir')
         .map { file(it) }
         .getOrElse(new File(gradle.gradleUserHomeDir, 'caches/telosnex-libwebrtc'))
 def cachedAar = new File(new File(cacheRoot, androidVersion), androidAsset)
+def localAar = System.getenv('TELOSNEX_WEBRTC_AAR')
+if (localAar) {
+    def localHash = System.getenv('TELOSNEX_WEBRTC_AAR_SHA256')
+    if (!(localHash ==~ /[0-9a-f]{64}/)) throw new GradleException('Local AAR requires TELOSNEX_WEBRTC_AAR_SHA256')
+    cachedAar = file(localAar)
+    expectedSha256 = localHash
+}
 def downloadUrl = "${releaseBaseUrl}/${androidVersion}/${androidAsset}"
 
 def sha256 = { File input ->
@@ -74,6 +81,7 @@ def fetchTelosnexWebRtcAar = tasks.register('fetchTelosnexWebRtcAar') {
             return
         }
 
+        if (localAar) throw new GradleException("Missing local AAR ${cachedAar}")
         cachedAar.parentFile.mkdirs()
         def partial = new File(cachedAar.parentFile, "${cachedAar.name}.part-${UUID.randomUUID()}")
         try {
