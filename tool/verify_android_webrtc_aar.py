@@ -16,12 +16,16 @@ NATIVE_SYMBOLS = (
     b"Java_org_webrtc_PeerConnectionFactory_nativeAcquireAudioRecording",
     b"Java_org_webrtc_PeerConnectionFactory_nativeReleaseAudioRecording",
     b"Java_org_webrtc_PeerConnectionFactory_nativeGetAudioRecordingState",
+    b"Java_org_webrtc_PeerConnectionFactory_nativeStartPcmPlayoutSource",
+    b"Java_org_webrtc_PeerConnectionFactory_nativeGetPcmPlayoutSourceState",
 )
 JAVA_METHODS = {
     "org.webrtc.PeerConnectionFactory": (
         "public int acquireAudioRecording();",
         "public int releaseAudioRecording();",
         "public org.webrtc.PeerConnectionFactory$AudioRecordingState getAudioRecordingState();",
+        "public long startPcmPlayoutSource(int, int, boolean);",
+        "public long[] getPcmPlayoutSourceState(long);",
     ),
     "org.webrtc.audio.JavaAudioDeviceModule": (
         "public void applyAudioProcessingOptions(org.webrtc.audio.AudioProcessingOptions);",

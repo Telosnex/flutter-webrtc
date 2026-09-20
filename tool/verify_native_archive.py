@@ -18,8 +18,12 @@ from pathlib import Path
 from zipfile import ZipFile
 
 CLOCK_SYMBOLS = ('ConfigureAudioClockCorrectionV1', 'GetAudioClockCorrectionStateV1')
-APPLE_METHODS = ('acquireExternalRecordingWithAudioProcessingOptions:',
-                 'releaseExternalRecording', 'hasExternalRecordingDemand')
+APPLE_ADM_METHODS = ('acquireExternalRecordingWithAudioProcessingOptions:',
+                     'releaseExternalRecording', 'hasExternalRecordingDemand')
+APPLE_FACTORY_DECLARATIONS = ('RTC_PCM_PLAYOUT_SHARED', 'startPcmPlayoutWithSampleRate:',
+                              'pcmPlayoutStateForGeneration:')
+APPLE_FACTORY_METHODS = ('startPcmPlayoutWithSampleRate:channels:shared:',
+                         'pcmPlayoutStateForGeneration:')
 APPLE_SLICES = {
     ('ios', ''): ({'arm64'}, 'ios'),
     ('ios', 'simulator'): ({'arm64', 'x86_64'}, 'iossimulator'),
@@ -82,7 +86,8 @@ def binary_arch(data, platform):
 
 def desktop(archive, platform, arch, temporary):
     headers = {
-        'rtc_audio_device.h': ('AcquireRecording()', 'ReleaseRecording()', 'GetRecordingState()'),
+        'rtc_audio_device.h': ('AcquireRecording()', 'ReleaseRecording()', 'GetRecordingState()',
+                               'StartPcmPlayoutSource(', 'GetPcmPlayoutSourceState('),
         'rtc_audio_processing.h': ('ApplyCaptureProfile(', 'GetCaptureProcessingState()'),
         'rtc_audio_clock_correction.h': CLOCK_SYMBOLS,
     }
@@ -123,9 +128,12 @@ def apple(archive, temporary):
         require(set(lib['SupportedArchitectures']) == expected_arches, f'{key}: plist architectures differ')
         require(lib['LibraryPath'] == 'WebRTC.framework', 'unexpected framework path')
         base = f"{root}/{lib['LibraryIdentifier']}/{lib['LibraryPath']}"
-        header = archive_read(archive, base + '/Headers/RTCAudioDeviceModule.h').decode()
-        for method in APPLE_METHODS:
-            require(method in header, f'{base}: missing declaration {method}')
+        adm_header = archive_read(archive, base + '/Headers/RTCAudioDeviceModule.h').decode()
+        factory_header = archive_read(archive, base + '/Headers/RTCPeerConnectionFactory.h').decode()
+        for method in APPLE_ADM_METHODS:
+            require(method in adm_header, f'{base}: missing declaration {method}')
+        for declaration in APPLE_FACTORY_DECLARATIONS:
+            require(declaration in factory_header, f'{base}: missing declaration {declaration}')
         data = archive_read(archive, base + '/WebRTC')
         binary = temporary / 'WebRTC'
         binary.write_bytes(data)
@@ -137,7 +145,9 @@ def apple(archive, temporary):
                     f'{base}/{arch}: Mach-O platform mismatch')
             metadata = command('xcrun', 'llvm-objdump', '--macho', f'--arch={arch}', '--objc-meta-data', str(binary))
             require('_OBJC_CLASS_$_RTCAudioDeviceModule' in metadata, 'missing Objective-C ADM class')
-            for method in APPLE_METHODS:
+            require('_OBJC_CLASS_$_RTCPeerConnectionFactory' in metadata,
+                    'missing Objective-C peer connection factory class')
+            for method in (*APPLE_ADM_METHODS, *APPLE_FACTORY_METHODS):
                 require(method in metadata, f'{base}/{arch}: missing Objective-C method {method}')
         receipt.append({'library': base, 'architectures': sorted(arches),
                         'platform': expected_platform, 'sha256': hashlib.sha256(data).hexdigest()})

@@ -770,8 +770,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
   if ([call.method hasPrefix:@"pcmPlayout"]) {
     if ([call.method isEqualToString:@"pcmPlayoutCapabilities"]) {
-      result(@{ @"version": @([LocalPcmPlayoutController isSupported] ? 1 : 0),
-        @"sampleRate": @24000, @"channels": @1, @"requiresAnchor": @NO });
+      result([LocalPcmPlayoutController capabilities]);
       return;
     }
     if (![LocalPcmPlayoutController isSupported]) { result(FlutterMethodNotImplemented); return; }
@@ -787,7 +786,7 @@ static __weak id<RTCAudioDeviceModuleDelegate> gAudioDeviceModuleObserver = nil;
       arguments = copy;
     }
     [_pcmPlayoutController perform:call.method arguments:arguments completion:^(NSDictionary *state, NSString *error) {
-      if (error) result([FlutterError errorWithCode:@"pcmPlayoutFailed" message:error details:state]);
+      if (error) result([FlutterError errorWithCode:state[@"errorCode"] ?: @"pcmPlayoutFailed" message:error details:state]);
       else result(state);
     }];
     return;

@@ -200,6 +200,7 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
       Map<String, Object> caps = new HashMap<>();
       caps.put("version", pcmPlayout == null ? 0 : 1);
       caps.put("sampleRate", 24000); caps.put("channels", 1); caps.put("requiresAnchor", false);
+      if (pcmPlayout != null) caps = pcmPlayout.capabilities();
       result.success(caps); return;
     }
     if (pcmPlayout == null) { result.notImplemented(); return; }
@@ -213,7 +214,11 @@ public class MethodCallHandlerImpl implements MethodCallHandler, StateProvider {
           result.success(state);
         });
       }
-      catch (Exception error) { result.error("pcmPlayoutFailed", error.getMessage(), null); }
+      catch (Exception error) {
+        String code = error instanceof LocalPcmPlayoutController.PcmException
+            ? ((LocalPcmPlayoutController.PcmException) error).code : "pcmPlayoutFailed";
+        new Handler(Looper.getMainLooper()).post(() -> result.error(code, error.getMessage(), null));
+      }
     });
   }
 

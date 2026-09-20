@@ -23,14 +23,24 @@ class LocalPcmPlayoutState {
   final int delayMs;
 }
 
-/// V1 app-owned PCM16LE / mono / 24kHz input to native WebRTC's render mixer.
+enum LocalPcmOwnership { exclusive, shared }
+
+/// App-owned PCM16LE input to WebRTC's render mixer. Format and ownership are
+/// immutable. Shared owners have independent queues and cancellation.
 /// Web uses a browser media element; browser AEC reference coverage is opaque.
 /// No microphone, SDP, remote peer, encoder, network audio or loopback.
 /// Unsupported platforms report false; operational failures are NOT fallback.
 class LocalPcmPlayout {
-  LocalPcmPlayout({Future<RTCPeerConnection> Function()? createAnchor})
-      : _createAnchor =
+  LocalPcmPlayout({
+    this.sampleRate = 24000,
+    this.channels = 1,
+    this.ownership = LocalPcmOwnership.exclusive,
+    Future<RTCPeerConnection> Function()? createAnchor,
+  }) : _createAnchor =
             createAnchor ?? (() => createPeerConnection({'iceServers': []}));
+  final int sampleRate, channels;
+  final LocalPcmOwnership ownership;
+  int get bytesPerFrame => channels * 2;
   final Future<RTCPeerConnection> Function() _createAnchor;
   final _browser = BrowserPcmPlayout();
   Future<dynamic> _invoke(String method, [dynamic args]) => kIsWeb
@@ -54,14 +64,32 @@ class LocalPcmPlayout {
   bool _starting = false;
   Future<void> _tail = Future.value();
 
-  static Future<bool> isSupported() async {
+  static Future<bool> isSupported({
+    int sampleRate = 24000,
+    int channels = 1,
+    LocalPcmOwnership ownership = LocalPcmOwnership.exclusive,
+  }) async {
+    if (!((sampleRate == 24000 && channels == 1) ||
+        (sampleRate == 48000 && channels == 2))) {
+      return false;
+    }
     if (kIsWeb) return BrowserPcmPlayout.isSupported;
     try {
       final value = await WebRTC.invokeMethod('pcmPlayoutCapabilities');
-      return value is Map &&
-          value['version'] == 1 &&
-          value['sampleRate'] == 24000 &&
-          value['channels'] == 1;
+      if (value is! Map || value['version'] != 1) return false;
+      if (ownership == LocalPcmOwnership.shared &&
+          (value['maxSharedSources'] is! num ||
+              (value['maxSharedSources'] as num) < 2)) {
+        return false;
+      }
+      final formats = value['supportedFormats'];
+      if (formats is List) {
+        return formats.any((f) =>
+            f is Map &&
+            f['sampleRate'] == sampleRate &&
+            f['channels'] == channels);
+      }
+      return sampleRate == value['sampleRate'] && channels == value['channels'];
     } on MissingPluginException {
       return false;
     }
@@ -79,7 +107,8 @@ class LocalPcmPlayout {
     }
     _starting = true;
     try {
-      if (!await isSupported()) {
+      if (!await isSupported(
+          sampleRate: sampleRate, channels: channels, ownership: ownership)) {
         throw UnsupportedError('Native PCM playout unavailable');
       }
       // M144 lazily creates/owns its shared media engine through a Call.
@@ -91,7 +120,18 @@ class LocalPcmPlayout {
           _anchor = await _createAnchor();
         }
       }
-      final raw = await _invoke('pcmPlayoutStart');
+      final extended = sampleRate != 24000 ||
+          channels != 1 ||
+          ownership != LocalPcmOwnership.exclusive;
+      final raw = await _invoke(
+          'pcmPlayoutStart',
+          extended
+              ? {
+                  'sampleRate': sampleRate,
+                  'channels': channels,
+                  'ownershipMode': ownership.name,
+                }
+              : null);
       if (raw is Map &&
           raw['generation'] is num &&
           (raw['generation'] as num) > 0) {
@@ -99,6 +139,12 @@ class LocalPcmPlayout {
       }
       final state = LocalPcmPlayoutState.fromMap(raw as Map);
       if (state.generation <= 0) throw StateError('Invalid PCM generation');
+      if (extended &&
+          (raw['sampleRate'] != sampleRate ||
+              raw['channels'] != channels ||
+              raw['ownershipMode'] != ownership.name)) {
+        throw StateError('Backend rejected PCM format or ownership mode');
+      }
       _generation = state.generation;
       _epoch = state.epoch;
     } catch (_) {
@@ -118,11 +164,13 @@ class LocalPcmPlayout {
     if (_generation == null || _stopping) {
       return Future.error(StateError('PCM output not active'));
     }
-    if (pcm.isEmpty || pcm.length.isOdd || pcm.length > 48000) {
+    if (pcm.isEmpty ||
+        pcm.length % bytesPerFrame != 0 ||
+        pcm.length > sampleRate * bytesPerFrame) {
       return Future.error(
-          ArgumentError('Expected 1–24000 complete PCM16 frames'));
+          ArgumentError('Expected up to one second of complete PCM16 frames'));
     }
-    if (_pendingBytes + pcm.length > 240000) {
+    if (_pendingBytes + pcm.length > sampleRate * bytesPerFrame * 5) {
       return Future.error(StateError('Pending PCM exceeds 5 seconds'));
     }
     // Caller may reuse its input immediately after invoking this method.

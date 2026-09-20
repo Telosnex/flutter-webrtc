@@ -18,8 +18,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "WebRTC",
-            url: "https://github.com/Telosnex/libwebrtc/releases/download/libwebrtc.m144.7559.09-telosnex.09/WebRTC.xcframework.zip",
-            checksum: "1406eaf95da3c99dacc43952fd7f3fd420bf5d7407d1612eb2b6c4a2f4452534"
+            url: "https://github.com/Telosnex/libwebrtc/releases/download/libwebrtc.m144.7559.09-telosnex.10/WebRTC.xcframework.zip",
+            checksum: "39b28f13d6db7fe70ed348ab0b3b4504fd7c4d92ee1968221fef9a1820dd404b"
         ),
         .target(
             name: "flutter_webrtc",

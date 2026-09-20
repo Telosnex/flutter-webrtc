@@ -14,6 +14,7 @@
 
 #include "libwebrtc.h"
 #include "rtc_logging.h"
+#include <set>
 
 namespace flutter_webrtc_plugin {
 
@@ -51,7 +52,7 @@ class FlutterWebRTC : public FlutterWebRTCBase,
 
  private:
   void HandlePcmPlayout(const MethodCallProxy& call, std::unique_ptr<MethodResultProxy> result);
-  int64_t pcm_playout_generation_ = 0;
+  std::set<int64_t> pcm_playout_generations_;
   void StartLocalAudioCapture(const EncodableMap& params,
                               std::unique_ptr<MethodResultProxy> result);
   void StopLocalAudioCapture(const EncodableMap& params,

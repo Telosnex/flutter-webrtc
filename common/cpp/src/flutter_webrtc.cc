@@ -91,7 +91,7 @@ FlutterWebRTC::FlutterWebRTC(FlutterWebRTCPlugin* plugin)
 
 FlutterWebRTC::~FlutterWebRTC() {
 #ifdef LIBWEBRTC_PCM_PLAYOUT_V1
-  if (pcm_playout_generation_) audio_device_->StopPcmPlayout(pcm_playout_generation_);
+  for (auto generation : pcm_playout_generations_) audio_device_->StopPcmPlayout(generation);
 #endif
   if (!local_audio_capture_) {
     return;
@@ -1416,6 +1416,12 @@ void FlutterWebRTC::HandlePcmPlayout(const MethodCallProxy& call, std::unique_pt
     value[EncodableValue("channels")] = EncodableValue(1);
     value[EncodableValue("maxChunkBytes")] = EncodableValue(48000);
     value[EncodableValue("maxQueuedFrames")] = EncodableValue(120000);
+#ifdef LIBWEBRTC_PCM_PLAYOUT_SHARED
+    value[EncodableValue("maxSharedSources")] = EncodableValue(2);
+    value[EncodableValue("supportedFormats")] = EncodableValue(EncodableList{
+      EncodableValue(EncodableMap{{EncodableValue("sampleRate"), EncodableValue(24000)}, {EncodableValue("channels"), EncodableValue(1)}}),
+      EncodableValue(EncodableMap{{EncodableValue("sampleRate"), EncodableValue(48000)}, {EncodableValue("channels"), EncodableValue(2)}})});
+#endif
 #else
     value[EncodableValue("version")] = EncodableValue(0);
 #endif
@@ -1425,9 +1431,18 @@ void FlutterWebRTC::HandlePcmPlayout(const MethodCallProxy& call, std::unique_pt
 #ifndef LIBWEBRTC_PCM_PLAYOUT_V1
   result->NotImplemented();
 #else
-  auto snapshot = [this] {
+  auto snapshot = [this](int64_t generation) {
+#ifdef LIBWEBRTC_PCM_PLAYOUT_SHARED
+    const auto state = audio_device_->GetPcmPlayoutSourceState(generation);
+#else
     const auto state = audio_device_->GetPcmPlayoutState();
+#endif
     EncodableMap value;
+#ifdef LIBWEBRTC_PCM_PLAYOUT_SHARED
+    value[EncodableValue("sampleRate")] = EncodableValue(state.sample_rate);
+    value[EncodableValue("channels")] = EncodableValue(state.channels);
+    value[EncodableValue("ownershipMode")] = EncodableValue(state.shared ? "shared" : "exclusive");
+#endif
     value[EncodableValue("generation")] = EncodableValue(state.generation);
     value[EncodableValue("epoch")] = EncodableValue(state.epoch);
     value[EncodableValue("queuedFrames")] = EncodableValue(state.queued_frames);
@@ -1440,18 +1455,13 @@ void FlutterWebRTC::HandlePcmPlayout(const MethodCallProxy& call, std::unique_pt
     value[EncodableValue("delayMs")] = EncodableValue(state.delay_ms);
     return value;
   };
-  if (method == "pcmPlayoutStart") {
-    if (pcm_playout_generation_) {result->Error("pcmPlayoutBusy","An output owner already exists");return;}
-    const int64_t generation = audio_device_->StartPcmPlayout();
-    if (generation <= 0) {result->Error("pcmPlayoutStart","Could not start shared ADM playout");return;}
-    pcm_playout_generation_ = generation;
-    result->Success(EncodableValue(snapshot()));
-    return;
-  }
-  if (!call.arguments() || !TypeIs<EncodableMap>(*call.arguments())) {
+  if (call.arguments() && !TypeIs<EncodableMap>(*call.arguments()) &&
+      !(method == "pcmPlayoutStart" && TypeIs<std::monostate>(*call.arguments()))) {
     result->Error("pcmPlayoutArguments","Expected a map");return;
   }
-  const auto& params = GetValue<EncodableMap>(*call.arguments());
+  const EncodableMap empty;
+  const auto& params = call.arguments() && TypeIs<EncodableMap>(*call.arguments())
+      ? GetValue<EncodableMap>(*call.arguments()) : empty;
   auto integer = [&params](const char* key) -> int64_t {
     auto i=params.find(EncodableValue(key));
     if(i==params.end())return -1;
@@ -1459,8 +1469,36 @@ void FlutterWebRTC::HandlePcmPlayout(const MethodCallProxy& call, std::unique_pt
     if(TypeIs<int64_t>(i->second))return GetValue<int64_t>(i->second);
     return -1;
   };
+  if (method == "pcmPlayoutStart") {
+    const bool format = params.count(EncodableValue("sampleRate")) || params.count(EncodableValue("channels"));
+    const auto rate = format ? integer("sampleRate") : 24000;
+    const auto channels = format ? integer("channels") : 1;
+    const auto mode_it = params.find(EncodableValue("ownershipMode"));
+    std::string mode = "exclusive";
+    if (mode_it != params.end()) {
+      if (!TypeIs<std::string>(mode_it->second)) {result->Error("pcmPlayoutArguments", "Invalid ownership mode");return;}
+      mode = GetValue<std::string>(mode_it->second);
+    }
+    if (!((rate == 24000 && channels == 1) || (rate == 48000 && channels == 2)) ||
+        (mode != "shared" && mode != "exclusive")) {
+      result->Error("pcmPlayoutArguments", "Unsupported PCM format or mode");return;
+    }
+#ifdef LIBWEBRTC_PCM_PLAYOUT_SHARED
+    const int64_t generation = audio_device_->StartPcmPlayoutSource(rate, channels, mode == "shared");
+#else
+    if (rate != 24000 || channels != 1 || mode != "exclusive") {result->Error("pcmPlayoutUnsupported", "Matching SDK required");return;}
+    if (!pcm_playout_generations_.empty()) {result->Error("pcmPlayoutBusy","An output owner already exists");return;}
+    const int64_t generation = audio_device_->StartPcmPlayout();
+#endif
+    if (generation <= 0) {
+      result->Error(generation == -5 ? "pcmPlayoutBusy" : generation == -4 ? "pcmPlayoutCapacity" : "pcmPlayoutStart", "Could not acquire PCM output");return;
+    }
+    pcm_playout_generations_.insert(generation);
+    result->Success(EncodableValue(snapshot(generation)));
+    return;
+  }
   const int64_t generation=integer("generation");
-  if (generation <= 0 || generation != pcm_playout_generation_) {
+  if (generation <= 0 || !pcm_playout_generations_.count(generation)) {
     result->Error("pcmPlayoutStale","Output generation is no longer active");return;
   }
   int code=0;
@@ -1475,15 +1513,15 @@ void FlutterWebRTC::HandlePcmPlayout(const MethodCallProxy& call, std::unique_pt
     code=audio_device_->ClearPcmPlayout(generation,integer("epoch"));
   } else if (method == "pcmPlayoutStop") {
     code=audio_device_->StopPcmPlayout(generation);
-    if (code==0) pcm_playout_generation_=0;
+    if (code==0) pcm_playout_generations_.erase(generation);
   } else if (method != "pcmPlayoutState") {
     result->NotImplemented();return;
   }
   if (code != 0) {
-    result->Error("pcmPlayoutFailed","PCM operation rejected ("+std::to_string(code)+")",EncodableValue(snapshot()));
+    result->Error("pcmPlayoutFailed","PCM operation rejected ("+std::to_string(code)+")",EncodableValue(snapshot(generation)));
     return;
   }
-  result->Success(EncodableValue(snapshot()));
+  result->Success(EncodableValue(snapshot(generation)));
 #endif
 }
 

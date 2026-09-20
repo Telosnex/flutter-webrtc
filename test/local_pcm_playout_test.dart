@@ -27,14 +27,14 @@ void main() {
   var failStop = false;
   Completer<void>? heldWrite;
   Map<String, dynamic> state() => {
-    'generation': 7,
-    'epoch': 0,
-    'queuedFrames': 0,
-    'consumedFrames': 0,
-    'renderCallbacks': 0,
-    'playing': true,
-    'delayMs': 0,
-  };
+        'generation': 7,
+        'epoch': 0,
+        'queuedFrames': 0,
+        'consumedFrames': 0,
+        'renderCallbacks': 0,
+        'playing': true,
+        'delayMs': 0,
+      };
   setUp(() {
     debugDefaultTargetPlatformOverride = TargetPlatform.linux;
     calls.clear();
@@ -42,17 +42,17 @@ void main() {
     heldWrite = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
-          calls.add(call);
-          if (call.method == 'initialize') return null;
-          if (call.method == 'pcmPlayoutCapabilities') {
-            return {'version': 1, 'sampleRate': 24000, 'channels': 1};
-          }
-          if (call.method == 'pcmPlayoutWrite') await heldWrite?.future;
-          if (call.method == 'pcmPlayoutStop' && failStop) {
-            throw PlatformException(code: 'stopFailed');
-          }
-          return state();
-        });
+      calls.add(call);
+      if (call.method == 'initialize') return null;
+      if (call.method == 'pcmPlayoutCapabilities') {
+        return {'version': 1, 'sampleRate': 24000, 'channels': 1};
+      }
+      if (call.method == 'pcmPlayoutWrite') await heldWrite?.future;
+      if (call.method == 'pcmPlayoutStop' && failStop) {
+        throw PlatformException(code: 'stopFailed');
+      }
+      return state();
+    });
   });
   tearDown(() {
     debugDefaultTargetPlatformOverride = null;
@@ -129,25 +129,25 @@ void main() {
       }
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-            if (call.method == 'initialize') return null;
-            throw MissingPluginException();
-          });
+        if (call.method == 'initialize') return null;
+        throw MissingPluginException();
+      });
       expect(await LocalPcmPlayout.isSupported(), false);
     },
   );
   test('SDK-owned lifetime skips empty-peer anchor', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
-          if (call.method == 'pcmPlayoutCapabilities') {
-            return {
-              'version': 1,
-              'sampleRate': 24000,
-              'channels': 1,
-              'requiresAnchor': false,
-            };
-          }
-          return state();
-        });
+      if (call.method == 'pcmPlayoutCapabilities') {
+        return {
+          'version': 1,
+          'sampleRate': 24000,
+          'channels': 1,
+          'requiresAnchor': false,
+        };
+      }
+      return state();
+    });
     final sink = LocalPcmPlayout(
       createAnchor: () async {
         throw StateError('must not create peer');
@@ -155,5 +155,60 @@ void main() {
     );
     await sink.start();
     await sink.stop();
+  });
+  test('legacy backend rejects shared or music before acquisition', () async {
+    for (final sink in [
+      LocalPcmPlayout(ownership: LocalPcmOwnership.shared),
+      LocalPcmPlayout(sampleRate: 48000, channels: 2),
+    ]) {
+      await expectLater(sink.start(), throwsUnsupportedError);
+    }
+    expect(calls.where((c) => c.method == 'pcmPlayoutStart'), isEmpty);
+  });
+  test('shared format uses frame-aligned duration limits and scoped tokens',
+      () async {
+    var generation = 0;
+    final owners = <int, Map>{};
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      if (call.method == 'pcmPlayoutCapabilities') {
+        return {
+          'version': 1,
+          'sampleRate': 24000,
+          'channels': 1,
+          'requiresAnchor': false,
+          'maxSharedSources': 2,
+          'supportedFormats': [
+            {'sampleRate': 24000, 'channels': 1},
+            {'sampleRate': 48000, 'channels': 2},
+          ],
+        };
+      }
+      if (call.method == 'pcmPlayoutStart') {
+        final token = ++generation;
+        return owners[token] = {
+          ...state(),
+          ...call.arguments as Map,
+          'generation': token
+        };
+      }
+      final token = call.arguments['generation'] as int;
+      if (call.method == 'pcmPlayoutStop') return owners.remove(token);
+      return owners[token];
+    });
+    final music = LocalPcmPlayout(
+        sampleRate: 48000, channels: 2, ownership: LocalPcmOwnership.shared);
+    final speech = LocalPcmPlayout(ownership: LocalPcmOwnership.shared);
+    await music.start();
+    await speech.start();
+    await expectLater(music.write(Uint8List(2)), throwsArgumentError);
+    await music.write(Uint8List(192000));
+    await expectLater(music.write(Uint8List(192004)), throwsArgumentError);
+    await speech.stop();
+    expect((await music.getState()).generation, 1);
+    expect(owners.keys, [1]);
+    await music.stop();
+    expect(owners, isEmpty);
   });
 }

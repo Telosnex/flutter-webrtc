@@ -9,6 +9,14 @@ import 'local_pcm_playout_processor_source.dart';
 /// this supplies route parity, not an assertion of browser AEC equivalence.
 class BrowserPcmPlayout {
   static BrowserPcmPlayout? _owner;
+  static final _owners = <BrowserPcmPlayout, String>{};
+  static Future<void> _lifecycle = Future.value();
+  static Future<T> _serial<T>(Future<T> Function() operation) {
+    final next = _lifecycle.then((_) => operation());
+    _lifecycle = next.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return next;
+  }
+
   static int _nextGeneration = 0;
   static String _output = '';
   int _generation = 0;
@@ -46,20 +54,21 @@ class BrowserPcmPlayout {
   }
 
   Future<dynamic> invoke(String method, [dynamic args]) async {
-    if (method == 'pcmPlayoutStart') return _start();
+    if (method == 'pcmPlayoutStart') return _serial(() => _start(args));
     if (args is! Map || args['generation'] != _generation || _generation == 0) {
       throw StateError('Stale PCM generation');
     }
     if (method == 'pcmPlayoutStop') {
       // Disconnect immediately even if the worklet/context is suspended. Do not
       // wait for an audio-thread ACK that cannot run during OS suspension.
-      await _close();
+      await stop();
       return <String, dynamic>{};
     }
-    if (_error != null) {
-      throw StateError('Browser PCM processor failed: $_error');
+    final output = _owner!;
+    if (output._error != null) {
+      throw StateError('Browser PCM processor failed: ${output._error}');
     }
-    if (_context?.state != 'running' || _audio!.paused) {
+    if (output._context?.state != 'running' || output._audio!.paused) {
       throw StateError('Browser output suspended');
     }
     final type = switch (method) {
@@ -68,26 +77,60 @@ class BrowserPcmPlayout {
       'pcmPlayoutState' => 'state',
       _ => throw UnsupportedError(method),
     };
-    if (type == 'clear') _audio!.muted = true;
-    try {
-      return await _request(type, args);
-    } finally {
-      if (type == 'clear') _audio?.muted = false;
-    }
+    return output._request(type, args);
   }
 
-  Future<Map> _start() async {
-    if (!isSupported || _owner != null) {
-      throw StateError('Browser PCM unavailable or already owned');
+  Future<Map> _start(dynamic args) async {
+    if (!isSupported || _generation != 0) {
+      throw StateError('PCM unavailable or already started');
     }
-    _owner = this;
+    if (args != null && args is! Map) {
+      throw ArgumentError('Expected PCM arguments');
+    }
+    final params = args as Map? ?? {};
+    final rate = params['sampleRate'] ?? 24000;
+    final channels = params['channels'] ?? 1;
+    final mode = params['ownershipMode'] ?? 'exclusive';
+    if (!((rate == 24000 && channels == 1) ||
+            (rate == 48000 && channels == 2)) ||
+        !['exclusive', 'shared'].contains(mode)) {
+      throw ArgumentError('Unsupported PCM format or mode');
+    }
+    if (_owners.isNotEmpty &&
+        (mode == 'exclusive' || _owners.containsValue('exclusive'))) {
+      throw StateError('PCM output already owned');
+    }
+    if (_owners.length >= 2) throw StateError('PCM source capacity exceeded');
+    if (_owner != null && _owners.isEmpty) {
+      throw StateError('Previous PCM output still requires cleanup');
+    }
+    if (_owner == null) {
+      _owner = this;
+      try {
+        await _open();
+      } catch (_) {
+        await _close();
+        rethrow;
+      }
+    }
     _generation = ++_nextGeneration;
+    _owners[this] = mode as String;
+    // Register before awaiting: a timed-out start can still create its source.
+    // stop() must retain that token for cleanup without touching another owner.
+    return _owner!._request('start', {
+      'generation': _generation,
+      'sampleRate': rate,
+      'channels': channels,
+      'ownershipMode': mode,
+    });
+  }
+
+  Future<void> _open() async {
     try {
-      // Browser resamples 24kHz render to hardware rate; no linear JS resampler.
       final context = web.AudioContext(web.AudioContextOptions(
-          sampleRate: 24000, latencyHint: 'interactive'.toJS));
+          sampleRate: 48000, latencyHint: 'interactive'.toJS));
       _context = context;
-      if (context.sampleRate != 24000) {
+      if (context.sampleRate != 48000) {
         throw StateError('Browser rejected PCM render rate');
       }
       final module = Uri.parse(web.document.baseURI)
@@ -113,9 +156,7 @@ class BrowserPcmPlayout {
           web.AudioWorkletNodeOptions(
               numberOfInputs: 0,
               numberOfOutputs: 1,
-              outputChannelCount: <JSNumber>[1.toJS].toJS,
-              processorOptions:
-                  {'generation': _generation}.jsify()! as JSObject));
+              outputChannelCount: <JSNumber>[2.toJS].toJS));
       _node = node;
       node.port.onmessage = ((web.MessageEvent event) {
         final data = event.data.dartify();
@@ -146,9 +187,7 @@ class BrowserPcmPlayout {
       if (context.state != 'running' || audio.paused) {
         throw StateError('Start PCM from a user gesture');
       }
-      return await _request('state', {'generation': _generation});
     } catch (_) {
-      await _close();
       rethrow;
     }
   }
@@ -172,7 +211,24 @@ class BrowserPcmPlayout {
     }
   }
 
-  Future<void> stop() => _close();
+  Future<void> stop() => _serial(() async {
+        if (!_owners.containsKey(this)) {
+          if (_owners.isEmpty && identical(_owner, this)) await _close();
+          return;
+        }
+        final output = _owner!;
+        if (_owners.length == 1) {
+          // The last owner can disconnect even while the context is suspended.
+          await output._close();
+        } else if (output._error == null) {
+          // Never mute the shared element. Await only this source's removal.
+          await output._request('stop', {'generation': _generation});
+        }
+        // A dead processor cannot acknowledge or render any source. Release
+        // this token locally; other callers still observe the shared failure.
+        _owners.remove(this);
+        _generation = 0;
+      });
 
   Future<void> _close() async {
     _audio?.pause();
@@ -192,7 +248,6 @@ class BrowserPcmPlayout {
     _node = null;
     _destination = null;
     _audio = null;
-    _generation = 0;
     if (identical(_owner, this)) _owner = null;
     for (final pending in _pending.values) {
       pending.completeError(StateError('PCM output stopped'));

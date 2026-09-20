@@ -36,4 +36,30 @@ void main() {
       await player.stop();
     }
   }, timeout: const Timeout(Duration(seconds: 20)));
+  testWidgets('shared music survives speech clear and stop', (_) async {
+    final speech = LocalPcmPlayout(ownership: LocalPcmOwnership.shared);
+    final music = LocalPcmPlayout(
+        sampleRate: 48000, channels: 2, ownership: LocalPcmOwnership.shared);
+    try {
+      await speech.start();
+      await music.start();
+      await expectLater(LocalPcmPlayout().start(), throwsStateError);
+      await expectLater(
+          LocalPcmPlayout(ownership: LocalPcmOwnership.shared).start(),
+          throwsStateError);
+      await music.write(Uint8List(192000));
+      await speech.write(Uint8List(4800));
+      await speech.clear();
+      await speech.stop();
+      final before = await music.getState();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final after = await music.getState();
+      expect(after.playing, true);
+      expect(after.generation, before.generation);
+      expect(after.consumedFrames, greaterThan(before.consumedFrames));
+    } finally {
+      await speech.stop();
+      await music.stop();
+    }
+  }, timeout: const Timeout(Duration(seconds: 20)));
 }
